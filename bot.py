@@ -1,3 +1,45 @@
+from flask import Flask
+    from threading import Thread
+    import os
+
+    app = Flask('')
+
+    @app.route('/')
+    def home():
+        return "Bot is alive!"
+
+    def run():
+        # Render apne aap PORT variable deta hai, nahi toh 8080 use hoga
+        port = int(os.environ.get("PORT", 8080))
+        app.run(host='0.0.0.0', port=port)
+
+    def keep_alive():
+        t = Thread(target=run)
+        t.start()
+    ```
+3.  **Usi `bot.py` mein jahan bot start ho raha hai (niche), wahan ise call karo:**
+    ```python
+    if __name__ == "__main__":
+        keep_alive() # Ise add karein
+        app.run()    # Aapke bot ka jo bhi original start command hai
+    ```
+
+---
+
+### **Option 2: Background Worker (Par ye Free nahi hai)**
+Render par **Background Worker** naam ka option hota hai jo bina kisi port ke chalta hai, lekin wo Free tier mein aksar nahi milta ya limited hota hai. Isliye **Option 1** hi sabse badhiya jugad hai.
+
+---
+
+### **Ek aur baat check karo:**
+Aapne jo Environment Variables set kiye hain, usme ek naya variable add kar do:
+*   **Key:** `PORT`
+*   **Value:** `8080`
+
+**Summary:** 
+Render ko bas ek "Zinda" website chahiye hoti hai check karne ke liye. Flask dalne se use wo mil jayegi, aur aapka Telegram bot background mein maze se chalta rahega. 
+
+Lucknow ke BCA student ho bhai, ye "Port Binding" wala logic toh aapke syllabus mein bhi kaam aayega! Try karke batao.
 import requests
 import sqlite3
 import asyncio
