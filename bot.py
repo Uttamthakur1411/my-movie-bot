@@ -9,45 +9,31 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # --- RENDER PORT BINDING JUGAD ---
-app = Flask('')
+flask_app = Flask('')
 
-@app.route('/')
+@flask_app.route('/')
 def home():
-        return "Bot is alive!"
+    return "Bot is alive!"
 
-def run():
+def run_flask():
     # Render automatically provides a PORT, or it defaults to 8080
-        port = int(os.environ.get("PORT", 8080))
-        app.run(host='0.0.0.0', port=port)
+    port = int(os.environ.get("PORT", 8080))
+    flask_app.run(host='0.0.0.0', port=port)
 
 def keep_alive():
-        t = Thread(target=run)
-        t.start()
+    t = Thread(target=run_flask)
+    t.start()
 
 # --- CONFIGURATION ---
 API_ID = 34976268
 API_HASH = "3ccae7cee8251da06d019c49a6aedb9e"
 BOT_TOKEN = "8213871486:AAG7UjcvDCEWA8kxLsQinllOcGSplZKVT2s"
 TMDB_KEY = "9309466d747d6bf6e91a81d01ec98cd0"
-
-# Ab yahan se aapka aage ka logic (Client initialization etc.) shuru hoga
-import requests
-import sqlite3
-import asyncio
-from datetime import datetime
-from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-
-# --- CONFIGURATION ---
-API_ID = 34976268 
-API_HASH = "3ccae7cee8251da06d019c49a6aedb9e"
-BOT_TOKEN = "8213871486:AAG7UjcvDCEWA8kxLsQinllOcGSplZKVT2s" 
-TMDB_KEY = "9309466d747d6bf6e91a81d01ec98cd0"
-# Aapka channel username set kar diya gaya hai
 FORCE_SUB_CHANNEL = "Movies_Uttam_Official" 
 ADMIN_ID = 5615686466 
 
-app = Client("Movie_Pro_V15_Final", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+# Pyrogram Client Initialization
+bot_app = Client("Movie_Pro_V15_Final", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 # --- DATABASE SETUP ---
 db = sqlite3.connect("bot_data.db", check_same_thread=False)
@@ -67,7 +53,7 @@ def get_tmdb_results(query):
     try:
         res = requests.get(url, timeout=10).json().get('results', [])
         return [r for r in res if r.get('media_type') in ['movie', 'tv']]
-    except Exception as e:
+    except Exception:
         return []
 
 def get_extra_details(m_type, m_id):
@@ -94,9 +80,10 @@ async def is_subscribed(client, message):
             f"To use this bot, please join our channel first and then try again.",
             reply_markup=btn
         )
+        return False
 
 # --- COMMANDS ---
-@app.on_message(filters.command("start"))
+@bot_app.on_message(filters.command("start"))
 async def start_handler(client, message):
     if not await is_subscribed(client, message): return
     
@@ -106,7 +93,7 @@ async def start_handler(client, message):
     db.commit()
     await message.reply_text(f"👋 **Hi {message.from_user.first_name}!**\n\nAb aap Hollywood, Bollywood aur saari Web Series yahan dhund sakte hain.\n\n📂 **Watchlist** dekhne ke liye `/watchlist` bhejien.")
 
-@app.on_message(filters.command("watchlist"))
+@bot_app.on_message(filters.command("watchlist"))
 async def show_watchlist(client, message):
     if not await is_subscribed(client, message): return
 
@@ -123,7 +110,7 @@ async def show_watchlist(client, message):
     
     await message.reply_text(text)
 
-@app.on_message(filters.text & ~filters.command(["start", "watchlist"]))
+@bot_app.on_message(filters.text & ~filters.command(["start", "watchlist"]))
 async def movie_search(client, message):
     if not await is_subscribed(client, message): return
     
@@ -173,7 +160,7 @@ async def movie_search(client, message):
     except Exception:
         await status.edit(caption, reply_markup=InlineKeyboardMarkup(btns))
 
-@app.on_callback_query()
+@bot_app.on_callback_query()
 async def cb_handler(client, cb):
     uid = cb.from_user.id
     if cb.data.startswith("dl_"):
@@ -185,15 +172,12 @@ async def cb_handler(client, cb):
     
     elif cb.data.startswith("wls_"):
         _, m_type, m_id = cb.data.split("_")
-        
         url = f"https://api.themoviedb.org/3/{m_type}/{m_id}?api_key={TMDB_KEY}"
         res = requests.get(url).json()
         full_title = res.get('title') or res.get('name')
-
         cr.execute("SELECT * FROM watchlist WHERE user_id = ? AND movie_id = ?", (uid, m_id))
         if cr.fetchone():
             return await cb.answer("❌ Already in Watchlist!", show_alert=True)
-            
         cr.execute("INSERT INTO watchlist (user_id, movie_id, movie_name) VALUES (?, ?, ?)", (uid, m_id, full_title))
         db.commit()
         await cb.answer(f"✅ '{full_title}' added!", show_alert=True)
@@ -203,6 +187,6 @@ async def cb_handler(client, cb):
         await cb.answer("Request sent to Admin!")
 
 if __name__ == "__main__":
-        keep_alive()  # Ye Flask server ko chalu karega
+    keep_alive()
     print("Bot is starting...")
-        app.run()     # Ye aapke bot ko start karega
+    bot_app.run()
