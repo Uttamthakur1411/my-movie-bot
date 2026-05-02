@@ -203,4 +203,6 @@ async def cb_handler(client, cb):
         await cb.answer("Request sent to Admin!")
 
 if __name__ == "__main__":
-    app.run()
+        keep_alive()  # Ye Flask server ko chalu karega
+    print("Bot is starting...")
+        app.run()     # Ye aapke bot ko start karega
