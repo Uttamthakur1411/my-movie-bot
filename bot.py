@@ -45,22 +45,7 @@ def init_db():
     db.commit()
 
 init_db()
-# --- 3. DATABASE SETUP ke niche ---
-db = sqlite3.connect("bot_data.db", check_same_thread=False)
-cr = db.cursor()
 
-# --- YAHAN PASTE KAREIN ---
-def get_random_shayari():
-    shayaris = [
-        "🍿 Cinema ki duniya ka maza lijiye,\nHar scene mein ek naya khwaab ji lijiye!",
-        "🎬 Kahani wahi jo dil ko chhu jaye,\nMovie wahi jo har gham ko bhulaye!",
-        "🌟 Sitaron ki mehfil aur movies ka saath,\nUttam Bot ke sang ho har pal khaas baat!",
-        "📽️ Parde par chalti hui yeh haseen dastan,\nDekho pyar se, ban jao iske meherban!",
-        "🔥 Action ho ya drama, sab milega yahan,\nMovies ka asli maza dekhega sara jahan!",
-        "🎞️ Waqt bitane ka bahana chahiye,\nEk achhi movie ka fasana chahiye!",
-        "🎭 Dil se bani har film ek ehsaas hai,\nHar kahani mein kuch toh baat khaas hai!"
-    ]
-    return random.choice(shayaris)
 # --- 4. TMDB ENGINE ---
 def get_tmdb_results(query):
     url = f"https://api.themoviedb.org/3/search/multi?api_key={TMDB_KEY}&query={query}&include_adult=false"
@@ -211,17 +196,7 @@ async def movie_search(client, message):
     user_lang = cr.fetchone()
     if not user_lang or not user_lang[0]:
         return await message.reply_text("❌ Please select language first by typing /start")
-# --- Line 214 ke niche ---
-@bot_app.on_message(filters.command("watchparty"))
-async def watchparty_cmd(client, message):
-    instructions = (
-        "👥 **How to Start a Watchparty:**\n\n"
-        "1. Movie search karein.\n"
-        "2. **'Watch Together'** button par click karein.\n"
-        "3. Wahi link apne doston ko share karein.\n"
-        "4. Sab ek saath play button dabayein aur enjoy karein! 🍿"
-    )
-    await message.reply_text(instructions)
+
     query = message.text.lower().strip()
     status_text = "🔎 Searching..." if user_lang[0] == "en" else "🔎 Khoj raha hoon..."
     status = await message.reply_text(status_text)
@@ -249,19 +224,12 @@ async def watchparty_cmd(client, message):
 
     caption = (f"🎬 **{title}**\n\n🎭 **Genre:** {genres}\n⏳ **Runtime:** {runtime}\n"
                f"⭐ **Rating:** {item.get('vote_average', 'N/A')}/10\n👥 **Cast:** {cast}{suggestions}\n\n"
-               f"✨ **Shayari:**\n_{shayari}_\n\n"
                f"✨ **Powered By Thakur Uttam**")
 
- # Line 188 se 195 tak ka sahi code:
-    btns = [
-        [
-            InlineKeyboardButton("📺 Stream Online", url=f"https://vidsrc.me/embed/{m_type}/{m_id}"),
-            InlineKeyboardButton("🎬 Trailer", url=f"https://www.youtube.com/results?search_query={title.replace(' ', '+')}+trailer")
-        ],
-        [
-            InlineKeyboardButton("🍿 Watch Together (Party)", url=f"https://vidsrc.me/embed/{m_type}/{m_id}")
-        ]
-    ]
+    btns = [[
+        InlineKeyboardButton("📺 Stream Online", url=f"https://vidsrc.me/embed/{m_type}/{m_id}"),
+        InlineKeyboardButton("🎬 Trailer", url=f"https://www.youtube.com/results?search_query={title.replace(' ', '+')}+trailer")
+    ]]
     
     if local_data:
         btns.insert(0, [InlineKeyboardButton("📥 Download Movie (Protected)", callback_data=f"dl_{local_data[1]}")] )
