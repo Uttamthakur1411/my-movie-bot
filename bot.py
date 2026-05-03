@@ -206,6 +206,7 @@ async def movie_search(client, message):
     results = get_tmdb_results(query)
 
     if not results and not local_data:
+        # Fixed Request Callback Data
         btn = InlineKeyboardMarkup([[InlineKeyboardButton("🎟 Request File", callback_data=f"req_{query[:15]}")]])
         error_msg = f"❌ '{query}' not found." if user_lang[0] == "en" else f"❌ '{query}' nahi mila."
         return await status.edit(error_msg, reply_markup=btn)
@@ -266,7 +267,14 @@ async def continue_cmd(client, message):
 async def cb_handler(client, cb):
     uid = cb.from_user.id
     
-    if cb.data.startswith("setlang_"):
+    # REQUEST FEATURE LOGIC (FIXED)
+    if cb.data.startswith("req_"):
+        movie_req = cb.data.split("_")[1]
+        await client.send_message(ADMIN_ID, f"📢 **New Movie Request!**\n\n🎬 **Name:** {movie_req}\n👤 **User ID:** `{uid}`\n👤 **Name:** {cb.from_user.first_name}")
+        await cb.answer("✅ Request sent to admin!", show_alert=True)
+        await cb.message.edit_text(f"✅ Request for **{movie_req}** has been sent to the admin.")
+
+    elif cb.data.startswith("setlang_"):
         lang_code = cb.data.split("_")[1]
         cr.execute("UPDATE users SET lang = ? WHERE user_id = ?", (lang_code, uid))
         db.commit()
