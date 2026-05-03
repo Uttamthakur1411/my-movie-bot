@@ -74,7 +74,7 @@ async def is_subscribed(client, message):
         await message.reply_text("❌ **Bot use karne ke liye channel join karein!**", reply_markup=btn)
         return False
 
-# --- 6. ADMIN COMMANDS ---
+# --- 6. ADMIN COMMANDS (SMART ADD FEATURE INCLUDED) ---
 @bot_app.on_message(filters.command("add") & filters.user(ADMIN_ID))
 async def add_movie_handler(client, message):
     try:
@@ -87,7 +87,34 @@ async def add_movie_handler(client, message):
     except:
         await message.reply_text("❌ **Usage:** `/add Movie Name | file_id`")
 
-# --- 7. START & LANGUAGE SELECTION ---
+@bot_app.on_message((filters.document | filters.video) & filters.user(ADMIN_ID))
+async def smart_add_handler(client, message):
+    if message.caption:
+        m_name = message.caption.strip().lower()
+        f_id = message.document.file_id if message.document else message.video.file_id
+        cr.execute("INSERT INTO files (movie_name, file_id) VALUES (?, ?)", (m_name, f_id))
+        db.commit()
+        await message.reply_text(f"✅ **Auto-Added to DB!**\n🎬 **Name:** `{m_name}`")
+    else:
+        f_id = message.document.file_id if message.document else message.video.file_id
+        await message.reply_text(f"🆔 **File ID:** `{f_id}`\n\n(Tip: Caption mein naam likh kar forward karein add karne ke liye)")
+
+# --- 7. TRENDING FEATURE ---
+@bot_app.on_message(filters.command("trending"))
+async def trending_cmd(client, message):
+    if not await is_subscribed(client, message): return
+    url = f"https://api.themoviedb.org/3/trending/all/day?api_key={TMDB_KEY}"
+    try:
+        res = requests.get(url).json().get('results', [])[:10]
+        text = "🔥 **Trending Today:**\n\n"
+        for i, m in enumerate(res, 1):
+            name = m.get('title') or m.get('name')
+            text += f"{i}. {name} ({m.get('media_type', '').upper()})\n"
+        await message.reply_text(text)
+    except:
+        await message.reply_text("❌ Kuch dikat aa rahi hai trending nikalne mein.")
+
+# --- 8. START & LANGUAGE SELECTION ---
 @bot_app.on_message(filters.command("start"))
 async def start_cmd(client, message):
     if not await is_subscribed(client, message): return
@@ -97,7 +124,6 @@ async def start_cmd(client, message):
     cr.execute("INSERT OR IGNORE INTO users (user_id, joined_date) VALUES (?, ?)", (uid, now))
     db.commit()
 
-    # Language Selection Buttons
     btns = InlineKeyboardMarkup([
         [InlineKeyboardButton("English 🇺🇸", callback_data="setlang_en"),
          InlineKeyboardButton("Hindi 🇮🇳", callback_data="setlang_hi")]
@@ -109,12 +135,11 @@ async def start_cmd(client, message):
         reply_markup=btns
     )
 
-# --- 8. MOVIE SEARCH ---
-@bot_app.on_message(filters.text & ~filters.command(["start", "add", "watchlist"]))
+# --- 9. MOVIE SEARCH ---
+@bot_app.on_message(filters.text & ~filters.command(["start", "add", "watchlist", "trending"]))
 async def movie_search(client, message):
     if not await is_subscribed(client, message): return
     
-    # Check if language is selected
     cr.execute("SELECT lang FROM users WHERE user_id = ?", (message.from_user.id,))
     user_lang = cr.fetchone()
     if not user_lang or not user_lang[0]:
@@ -160,7 +185,7 @@ async def movie_search(client, message):
     except:
         await status.edit(caption, reply_markup=InlineKeyboardMarkup(btns))
 
-# --- 9. CALLBACKS ---
+# --- 10. CALLBACKS ---
 @bot_app.on_callback_query()
 async def cb_handler(client, cb):
     uid = cb.from_user.id
@@ -193,7 +218,7 @@ async def cb_handler(client, cb):
         await client.send_message(ADMIN_ID, f"🚨 **Request:** `{cb.data.split('_')[1]}`")
         await cb.answer("Request sent!")
 
-# --- 10. LAUNCH ---
+# --- 11. LAUNCH ---
 if __name__ == "__main__":
     keep_alive()
     bot_app.run()
