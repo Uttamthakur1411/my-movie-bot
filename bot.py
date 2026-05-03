@@ -8,7 +8,7 @@ from datetime import datetime
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# --- 1. RENDER PORT BINDING (KEEP ALIVE) ---
+# --- 1. RENDER PORT BINDING ---
 flask_app = Flask('')
 
 @flask_app.route('/')
@@ -33,19 +33,19 @@ ADMIN_ID = 5615686466
 
 bot_app = Client("Movie_Pro_Final_V2", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# --- 3. DATABASE SETUP (SQLite) ---
+# --- 3. DATABASE SETUP ---
 db = sqlite3.connect("bot_data.db", check_same_thread=False)
 cr = db.cursor()
 
 def init_db():
-    cr.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER UNIQUE, joined_date TEXT)")
+    cr.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER UNIQUE, joined_date TEXT, lang TEXT)")
     cr.execute("CREATE TABLE IF NOT EXISTS files (id INTEGER PRIMARY KEY AUTOINCREMENT, movie_name TEXT, file_id TEXT)")
     cr.execute("CREATE TABLE IF NOT EXISTS watchlist (user_id INTEGER, movie_id TEXT, movie_name TEXT)")
     db.commit()
 
 init_db()
 
-# --- 4. TMDB & DETAILS ENGINE ---
+# --- 4. TMDB ENGINE ---
 def get_tmdb_results(query):
     url = f"https://api.themoviedb.org/3/search/multi?api_key={TMDB_KEY}&query={query}&include_adult=false"
     try:
@@ -63,7 +63,7 @@ def get_extra_details(m_type, m_id):
         return genres, runtime, cast
     except: return "N/A", "N/A", "N/A"
 
-# --- 5. AUTH CHECK ---
+# --- 5. AUTH & LANG CHECK ---
 async def is_subscribed(client, message):
     if not FORCE_SUB_CHANNEL: return True
     try:
@@ -74,46 +74,64 @@ async def is_subscribed(client, message):
         await message.reply_text("❌ **Bot use karne ke liye channel join karein!**", reply_markup=btn)
         return False
 
-# --- 6. ADMIN COMMANDS (DATA ENTRY) ---
+# --- 6. ADMIN COMMANDS ---
 @bot_app.on_message(filters.command("add") & filters.user(ADMIN_ID))
 async def add_movie_handler(client, message):
     try:
-        # Format: /add Movie Name | file_id
         input_str = message.text.split(" ", 1)[1]
         m_name, f_id = input_str.split("|")
-        m_name = m_name.strip().lower()
-        f_id = f_id.strip()
-        
+        m_name, f_id = m_name.strip().lower(), f_id.strip()
         cr.execute("INSERT INTO files (movie_name, file_id) VALUES (?, ?)", (m_name, f_id))
         db.commit()
-        await message.reply_text(f"✅ **Database Updated!**\n🎬 **Movie:** `{m_name}`\n🆔 **ID:** `{f_id}`")
+        await message.reply_text(f"✅ **Database Updated!**\n🎬 **Movie:** `{m_name}`")
     except:
         await message.reply_text("❌ **Usage:** `/add Movie Name | file_id`")
 
-# --- 7. USER SEARCH & COMMANDS ---
+# --- 7. START & LANGUAGE SELECTION ---
 @bot_app.on_message(filters.command("start"))
 async def start_cmd(client, message):
     if not await is_subscribed(client, message): return
+    
     uid = message.from_user.id
     now = datetime.now().strftime("%d-%m-%Y")
     cr.execute("INSERT OR IGNORE INTO users (user_id, joined_date) VALUES (?, ?)", (uid, now))
     db.commit()
-    await message.reply_text(f"👋 **Namaste {message.from_user.first_name}!**\n\nMovie ka naam bhejiye, main download link aur details nikaal dunga.")
 
+    # Language Selection Buttons
+    btns = InlineKeyboardMarkup([
+        [InlineKeyboardButton("English 🇺🇸", callback_data="setlang_en"),
+         InlineKeyboardButton("Hindi 🇮🇳", callback_data="setlang_hi")]
+    ])
+    
+    await message.reply_text(
+        f"👋 **Namaste {message.from_user.first_name}!**\n\n"
+        "Please select your language to continue / Kripya aage badhne ke liye apni bhasha chunein:",
+        reply_markup=btns
+    )
+
+# --- 8. MOVIE SEARCH ---
 @bot_app.on_message(filters.text & ~filters.command(["start", "add", "watchlist"]))
 async def movie_search(client, message):
     if not await is_subscribed(client, message): return
-    query = message.text.lower().strip()
-    status = await message.reply_text("🔎 Searching in Database...")
     
-    # Check Database for Download Link
+    # Check if language is selected
+    cr.execute("SELECT lang FROM users WHERE user_id = ?", (message.from_user.id,))
+    user_lang = cr.fetchone()
+    if not user_lang or not user_lang[0]:
+        return await message.reply_text("❌ Please select language first by typing /start")
+
+    query = message.text.lower().strip()
+    status_text = "🔎 Searching..." if user_lang[0] == "en" else "🔎 Khoj raha hoon..."
+    status = await message.reply_text(status_text)
+    
     cr.execute("SELECT file_id, id FROM files WHERE movie_name LIKE ?", (f"%{query}%",))
     local_data = cr.fetchone()
-    
     results = get_tmdb_results(query)
+
     if not results:
         btn = InlineKeyboardMarkup([[InlineKeyboardButton("🎟 Request File", callback_data=f"req_{query[:15]}")]])
-        return await status.edit(f"❌ '{query}' nahi mila.", reply_markup=btn)
+        error_msg = f"❌ '{query}' not found." if user_lang[0] == "en" else f"❌ '{query}' nahi mila."
+        return await status.edit(error_msg, reply_markup=btn)
 
     item = results[0]
     m_id, m_type = item['id'], item.get('media_type', 'movie')
@@ -126,15 +144,13 @@ async def movie_search(client, message):
                f"⭐ **Rating:** {item.get('vote_average', 'N/A')}/10\n👥 **Cast:** {cast}\n\n"
                f"✨ **Powered By Thakur Uttam**")
 
-    # Buttons Logic
-    btns = [
-        [InlineKeyboardButton("📺 Stream Online", url=f"https://vidsrc.me/embed/{m_type}/{m_id}"),
-         InlineKeyboardButton("🎬 Trailer", url=f"https://www.youtube.com/results?search_query={title.replace(' ', '+')}+trailer")]
-    ]
+    btns = [[
+        InlineKeyboardButton("📺 Stream Online", url=f"https://vidsrc.me/embed/{m_type}/{m_id}"),
+        InlineKeyboardButton("🎬 Trailer", url=f"https://www.youtube.com/results?search_query={title.replace(' ', '+')}+trailer")
+    ]]
     
-    # AGAR FILE DATABASE MEIN HAI TO DOWNLOAD BUTTON DIKHAO
     if local_data:
-        btns.insert(0, [InlineKeyboardButton("📥 Download Movie (Direct)", callback_data=f"dl_{local_data[1]}")])
+        btns.insert(0, [InlineKeyboardButton("📥 Download Movie", callback_data=f"dl_{local_data[1]}")])
     
     btns.append([InlineKeyboardButton("➕ Add Watchlist", callback_data=f"wls_{m_type}_{m_id}")])
 
@@ -144,17 +160,26 @@ async def movie_search(client, message):
     except:
         await status.edit(caption, reply_markup=InlineKeyboardMarkup(btns))
 
-# --- 8. CALLBACKS ---
+# --- 9. CALLBACKS ---
 @bot_app.on_callback_query()
 async def cb_handler(client, cb):
     uid = cb.from_user.id
-    if cb.data.startswith("dl_"):
+    
+    if cb.data.startswith("setlang_"):
+        lang_code = cb.data.split("_")[1]
+        cr.execute("UPDATE users SET lang = ? WHERE user_id = ?", (lang_code, uid))
+        db.commit()
+        msg = "✅ Language set to English! Now send movie name." if lang_code == "en" else "✅ Bhasha Hindi set ho gayi hai! Ab movie ka naam bhejiye."
+        await cb.message.edit_text(msg)
+        await cb.answer()
+
+    elif cb.data.startswith("dl_"):
         cr.execute("SELECT file_id FROM files WHERE id = ?", (cb.data.split("_")[1],))
         res = cr.fetchone()
         if res:
-            await client.send_cached_media(chat_id=uid, file_id=res[0], caption="✅ **Aapki Movie! Enjoy!**")
-            await cb.answer("Sending File...")
-    
+            await client.send_cached_media(chat_id=uid, file_id=res[0], caption="✅ **Enjoy your movie!**")
+            await cb.answer("Sending...")
+
     elif cb.data.startswith("wls_"):
         _, m_type, m_id = cb.data.split("_")
         url = f"https://api.themoviedb.org/3/{m_type}/{m_id}?api_key={TMDB_KEY}"
@@ -162,14 +187,13 @@ async def cb_handler(client, cb):
         name = res.get('title') or res.get('name')
         cr.execute("INSERT INTO watchlist (user_id, movie_id, movie_name) VALUES (?, ?, ?)", (uid, m_id, name))
         db.commit()
-        await cb.answer(f"✅ '{name}' added to watchlist!", show_alert=True)
+        await cb.answer(f"✅ Added: {name}", show_alert=True)
 
     elif cb.data.startswith("req_"):
-        await client.send_message(ADMIN_ID, f"🚨 **New File Request:** `{cb.data.split('_')[1]}`")
-        await cb.answer("Request sent to Admin!")
+        await client.send_message(ADMIN_ID, f"🚨 **Request:** `{cb.data.split('_')[1]}`")
+        await cb.answer("Request sent!")
 
-# --- 9. LAUNCH ---
+# --- 10. LAUNCH ---
 if __name__ == "__main__":
     keep_alive()
-    print("Bot is Live on Render!")
     bot_app.run()
