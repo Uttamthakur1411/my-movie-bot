@@ -6,7 +6,7 @@ import sqlite3
 import asyncio
 from datetime import datetime
 from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InlineQueryResultArticle, InputTextMessageContent
 
 # --- 1. RENDER PORT BINDING ---
 flask_app = Flask('')
@@ -31,16 +31,15 @@ TMDB_KEY = "9309466d747d6bf6e91a81d01ec98cd0"
 FORCE_SUB_CHANNEL = "Movies_Uttam_Official" 
 ADMIN_ID = 5615686466 
 
-bot_app = Client("Movie_Pro_Final_V3", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+bot_app = Client("Movie_Pro_Netflix_Final", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 # --- 3. DATABASE SETUP ---
 db = sqlite3.connect("bot_data.db", check_same_thread=False)
 cr = db.cursor()
 
 def init_db():
-    # Purane tables rakhte hue naye columns (points, referred_by) aur naye tables (last_watch) add kiye hain
-    cr.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER UNIQUE, joined_date TEXT, lang TEXT, referred_by INTEGER, points INTEGER DEFAULT 0)")
-    cr.execute("CREATE TABLE IF NOT EXISTS files (id INTEGER PRIMARY KEY AUTOINCREMENT, movie_name TEXT, file_id TEXT)")
+    cr.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER UNIQUE, joined_date TEXT, lang TEXT, referred_by INTEGER, points INTEGER DEFAULT 0, theme TEXT DEFAULT 'dark')")
+    cr.execute("CREATE TABLE IF NOT EXISTS files (id INTEGER PRIMARY KEY AUTOINCREMENT, movie_name TEXT, file_id TEXT, tags TEXT)")
     cr.execute("CREATE TABLE IF NOT EXISTS watchlist (user_id INTEGER, movie_id TEXT, movie_name TEXT)")
     cr.execute("CREATE TABLE IF NOT EXISTS last_watch (user_id INTEGER UNIQUE, movie_name TEXT, file_id TEXT)")
     db.commit()
@@ -76,7 +75,7 @@ async def is_subscribed(client, message):
         await message.reply_text("❌ **Bot use karne ke liye channel join karein!**", reply_markup=btn)
         return False
 
-# --- 6. ADMIN COMMANDS (AUTO NOTIFICATION INCLUDED) ---
+# --- 6. ADMIN COMMANDS ---
 @bot_app.on_message(filters.command("add") & filters.user(ADMIN_ID))
 async def add_movie_handler(client, message):
     try:
@@ -98,7 +97,7 @@ async def smart_add_handler(client, message):
         db.commit()
         await message.reply_text(f"✅ **Auto-Added to DB!**\n🎬 **Name:** `{m_name}`")
         
-        # 7. Auto Notification System
+        # Auto Notification System
         cr.execute("SELECT user_id FROM users")
         users = cr.fetchall()
         for user in users:
@@ -129,12 +128,12 @@ async def start_cmd(client, message):
     uid = message.from_user.id
     now = datetime.now().strftime("%d-%m-%Y")
     
-    # 10. Referral Reward Logic
+    # Referral Reward Logic
     if len(message.command) > 1 and message.command[1].isdigit():
         ref_id = int(message.command[1])
         if ref_id != uid:
             cr.execute("SELECT user_id FROM users WHERE user_id = ?", (uid,))
-            if not cr.fetchone(): # New user check
+            if not cr.fetchone(): 
                 cr.execute("UPDATE users SET points = points + 10 WHERE user_id = ?", (ref_id,))
                 try: await client.send_message(ref_id, "🎁 **Referral Reward!** You got 10 points for inviting a friend.")
                 except: pass
@@ -144,7 +143,8 @@ async def start_cmd(client, message):
 
     btns = InlineKeyboardMarkup([
         [InlineKeyboardButton("English 🇺🇸", callback_data="setlang_en"),
-         InlineKeyboardButton("Hindi 🇮🇳", callback_data="setlang_hi")]
+         InlineKeyboardButton("Hindi 🇮🇳", callback_data="setlang_hi")],
+        [InlineKeyboardButton("🎨 Settings & Theme", callback_data="open_settings")]
     ])
     
     await message.reply_text(
@@ -159,8 +159,38 @@ async def refer_cmd(client, message):
     ref_link = f"https://t.me/{bot_username}?start={message.from_user.id}"
     await message.reply_text(f"🚀 **Your Referral Link:**\n`{ref_link}`\n\nHar join par milenge 10 points!")
 
-# --- 9. MOVIE SEARCH (SMART & FUZZY) ---
-@bot_app.on_message(filters.text & ~filters.command(["start", "add", "watchlist", "trending", "refer", "continue"]))
+# --- 9. NETFLIX STYLE INLINE SEARCH ---
+@bot_app.on_inline_query()
+async def inline_netflix_search(client, query):
+    if not query.query:
+        results = []
+        cr.execute("SELECT movie_name FROM last_watch WHERE user_id = ?", (query.from_user.id,))
+        hist = cr.fetchone()
+        if hist:
+            results.append(InlineQueryResultArticle(title=f"⏯ Resume: {hist[0]}", input_message_content=InputTextMessageContent("/continue"), description="Continue watching your last movie"))
+        
+        trending = requests.get(f"https://api.themoviedb.org/3/trending/all/day?api_key={TMDB_KEY}").json().get('results', [])[:5]
+        for m in trending:
+            name = m.get('title') or m.get('name')
+            results.append(InlineQueryResultArticle(title=f"🔥 {name}", input_message_content=InputTextMessageContent(name)))
+        
+        await query.answer(results, cache_time=1)
+        return
+
+    tmdb_res = get_tmdb_results(query.query)
+    results = []
+    for m in tmdb_res[:10]:
+        title = m.get('title') or m.get('name')
+        results.append(InlineQueryResultArticle(
+            title=title,
+            description=f"⭐ {m.get('vote_average', 'N/A')}/10 | {m.get('media_type', 'movie').upper()}",
+            input_message_content=InputTextMessageContent(title),
+            thumb_url=f"https://image.tmdb.org/t/p/w200{m.get('poster_path')}" if m.get('poster_path') else None
+        ))
+    await query.answer(results)
+
+# --- 10. MOVIE SEARCH (AI & FUZZY) ---
+@bot_app.on_message(filters.text & ~filters.command(["start", "add", "watchlist", "trending", "refer", "continue", "settings"]))
 async def movie_search(client, message):
     if not await is_subscribed(client, message): return
     
@@ -173,10 +203,14 @@ async def movie_search(client, message):
     status_text = "🔎 Searching..." if user_lang[0] == "en" else "🔎 Khoj raha hoon..."
     status = await message.reply_text(status_text)
     
-    # Fuzzy/LIKE search in local DB
+    # Fuzzy Search Local
     cr.execute("SELECT file_id, id, movie_name FROM files WHERE movie_name LIKE ?", (f"%{query}%",))
     local_data = cr.fetchone()
     results = get_tmdb_results(query)
+
+    # Scene Search / AI Fallback
+    if not results and not local_data:
+        results = requests.get(f"https://api.themoviedb.org/3/search/movie?api_key={TMDB_KEY}&query={query}&include_adult=false").json().get('results', [])
 
     if not results and not local_data:
         btn = InlineKeyboardMarkup([[InlineKeyboardButton("🎟 Request File", callback_data=f"req_{query[:15]}")]])
@@ -190,8 +224,13 @@ async def movie_search(client, message):
     poster_path = item.get('poster_path')
     poster = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else "https://telegra.ph/file/default.jpg"
 
+    # AI Suggestions "More like this"
+    suggestions = ""
+    if len(results) > 1:
+        suggestions = "\n\n🍿 **More like this:**\n" + "\n".join([f"• {r.get('title') or r.get('name')}" for r in results[1:4]])
+
     caption = (f"🎬 **{title}**\n\n🎭 **Genre:** {genres}\n⏳ **Runtime:** {runtime}\n"
-               f"⭐ **Rating:** {item.get('vote_average', 'N/A')}/10\n👥 **Cast:** {cast}\n\n"
+               f"⭐ **Rating:** {item.get('vote_average', 'N/A')}/10\n👥 **Cast:** {cast}{suggestions}\n\n"
                f"✨ **Powered By Thakur Uttam**")
 
     btns = [[
@@ -200,7 +239,6 @@ async def movie_search(client, message):
     ]]
     
     if local_data:
-        # 18. DRM Style (Download button with protection)
         btns.insert(0, [InlineKeyboardButton("📥 Download Movie (Protected)", callback_data=f"dl_{local_data[1]}")] )
     
     btns.append([InlineKeyboardButton("➕ Add Watchlist", callback_data=f"wls_{m_type}_{m_id}")])
@@ -211,7 +249,7 @@ async def movie_search(client, message):
     except:
         await status.edit(caption, reply_markup=InlineKeyboardMarkup(btns))
 
-# --- 10. WATCHLIST & RESUME ---
+# --- 11. WATCHLIST & RESUME ---
 @bot_app.on_message(filters.command("watchlist"))
 async def show_watchlist(client, message):
     if not await is_subscribed(client, message): return
@@ -224,7 +262,6 @@ async def show_watchlist(client, message):
 
 @bot_app.on_message(filters.command("continue"))
 async def continue_cmd(client, message):
-    # 8. Resume Watching Feature
     cr.execute("SELECT movie_name, file_id FROM last_watch WHERE user_id = ?", (message.from_user.id,))
     res = cr.fetchone()
     if res:
@@ -232,7 +269,7 @@ async def continue_cmd(client, message):
     else:
         await message.reply_text("❌ History nahi mili.")
 
-# --- 11. CALLBACKS (DRM & RESUME LOGIC) ---
+# --- 12. CALLBACKS (ALL INCLUDED) ---
 @bot_app.on_callback_query()
 async def cb_handler(client, cb):
     uid = cb.from_user.id
@@ -241,32 +278,50 @@ async def cb_handler(client, cb):
         lang_code = cb.data.split("_")[1]
         cr.execute("UPDATE users SET lang = ? WHERE user_id = ?", (lang_code, uid))
         db.commit()
-        msg = "✅ Language set to English!" if lang_code == "en" else "✅ Bhasha Hindi set ho gayi!"
+        msg = "✅ Language set to English! Now send movie name." if lang_code == "en" else "✅ Bhasha Hindi set ho gayi hai! Ab movie ka naam bhejiye."
         await cb.message.edit_text(msg)
+        await cb.answer()
 
     elif cb.data.startswith("dl_"):
         cr.execute("SELECT file_id, movie_name FROM files WHERE id = ?", (cb.data.split("_")[1],))
         res = cr.fetchone()
         if res:
-            # 8. Save Last Accessed (For Resume Feature)
-            cr.execute("INSERT OR REPLACE INTO last_watch (user_id, movie_name, file_id) VALUES (?, ?, ?)", (uid, res[1], res[0]))
-            db.commit()
-            # 18. DRM Protection (protect_content=True restricts forwarding)
-            await client.send_cached_media(chat_id=uid, file_id=res[0], caption=f"✅ **Enjoy:** {res[1]}", protect_content=True)
-            await cb.answer("Sending...")
+            try:
+                # Save Last Accessed
+                cr.execute("INSERT OR REPLACE INTO last_watch (user_id, movie_name, file_id) VALUES (?, ?, ?)", (uid, res[1], res[0]))
+                db.commit()
+                # Send with DRM Protection
+                await client.send_cached_media(chat_id=uid, file_id=res[0], caption=f"✅ **Enjoy your movie:** {res[1]}", protect_content=True)
+                await cb.answer("Sending...")
+            except Exception as e:
+                # Broken Link Notification
+                await cb.answer("⚠️ Link Broken! Admin notified for fix.", show_alert=True)
+                await client.send_message(ADMIN_ID, f"🚨 **Broken Link Alert!** Movie: {res[1]} | DB ID: {res[0]}")
 
     elif cb.data.startswith("wls_"):
         _, m_type, m_id = cb.data.split("_")
         url = f"https://api.themoviedb.org/3/{m_type}/{m_id}?api_key={TMDB_KEY}"
-        name = requests.get(url).json().get('title') or requests.get(url).json().get('name')
+        res = requests.get(url).json()
+        name = res.get('title') or res.get('name')
         cr.execute("INSERT INTO watchlist (user_id, movie_id, movie_name) VALUES (?, ?, ?)", (uid, m_id, name))
         db.commit()
-        await cb.answer(f"✅ Added to Watchlist", show_alert=True)
+        await cb.answer(f"✅ Added: {name}", show_alert=True)
 
     elif cb.data.startswith("req_"):
         await client.send_message(ADMIN_ID, f"🚨 **Request:** `{cb.data.split('_')[1]}`")
         await cb.answer("Request sent!")
 
+    elif cb.data == "open_settings":
+        btns = InlineKeyboardMarkup([[InlineKeyboardButton("🌑 Dark Mode", callback_data="theme_dark"), InlineKeyboardButton("☀️ Light Mode", callback_data="theme_light")]])
+        await cb.message.edit_text("🎨 **Bot Theme Customization**\nChoose your look:", reply_markup=btns)
+
+    elif cb.data.startswith("theme_"):
+        theme = cb.data.split("_")[1]
+        cr.execute("UPDATE users SET theme = ? WHERE user_id = ?", (theme, uid))
+        db.commit()
+        await cb.answer(f"✅ {theme.capitalize()} Mode Activated!", show_alert=True)
+
+# --- 13. LAUNCH ---
 if __name__ == "__main__":
     keep_alive()
     bot_app.run()
