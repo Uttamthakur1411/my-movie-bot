@@ -293,61 +293,49 @@ async def show_watchlist(client, message):
     cr.execute("SELECT movie_name FROM watchlist WHERE user_id = ?", (uid,))
     res = cr.fetchall()
     if not res: return await message.reply_text("📑 Watchlist is empty!")
-    text = "📑 **Your Watchlist:**\n\n" + "\n".join([f"{i+1}. {m[0]}" for i, m in enumerate(res)])
+    text = "📑 **Your Watchlist:**\n\n" + "\n".join([f"{i+1}. {m[0].title()}" for i, m in enumerate(res)])
     await message.reply_text(text)
 
 @bot_app.on_message(filters.command("continue"))
 async def continue_cmd(client, message):
     cr.execute("SELECT movie_name, file_id FROM last_watch WHERE user_id = ?", (message.from_user.id,))
     res = cr.fetchone()
-    if res:
-        await client.send_cached_media(chat_id=message.chat.id, file_id=res[1], caption=f"⏯ **Resume:** {res[0]}", protect_content=True)
-    else:
-        await message.reply_text("❌ No history found.")
+    if res: await client.send_cached_media(chat_id=message.chat.id, file_id=res[1], caption=f"⏯ **Resume:** {res[0]}", protect_content=True)
+    else: await message.reply_text("❌ No history found.")
 
 # --- 13. CALLBACK HANDLER ---
 @bot_app.on_callback_query()
 async def cb_handler(client, cb):
     uid = cb.from_user.id
-    
     if cb.data.startswith("dl_"):
         cr.execute("SELECT file_id, movie_name FROM files WHERE id = ?", (cb.data.split("_")[1],))
         res = cr.fetchone()
         if res:
-            try:
-                # DNA Logic: Action keywords
-                dna = "Action Lover" if any(x in res[1].lower() for x in ['war','fight','kill']) else "Drama Explorer"
-                cr.execute("UPDATE users SET dna_score = ? WHERE user_id = ?", (dna, uid))
-                cr.execute("INSERT OR REPLACE INTO last_watch (user_id, movie_name, file_id) VALUES (?, ?, ?)", (uid, res[1], res[0]))
-                db.commit()
-                await client.send_cached_media(chat_id=uid, file_id=res[0], caption=f"🍿 **Enjoy:** {res[1]}", protect_content=True)
-                await cb.answer("Sending...")
-            except:
-                await cb.answer("⚠️ File error!", show_alert=True)
-
+            dna = "Action Lover" if any(x in res[1].lower() for x in ['war','fight','kill']) else "Drama Explorer"
+            cr.execute("UPDATE users SET dna_score = ? WHERE user_id = ?", (dna, uid))
+            cr.execute("INSERT OR REPLACE INTO last_watch (user_id, movie_name, file_id) VALUES (?, ?, ?)", (uid, res[1], res[0]))
+            db.commit()
+            await client.send_cached_media(chat_id=uid, file_id=res[0], caption=f"🍿 **Enjoy:** {res[1]}", protect_content=True)
+            await cb.answer("Sending...")
     elif cb.data == "view_dna":
         cr.execute("SELECT dna_score FROM users WHERE user_id = ?", (uid,))
-        dna = cr.fetchone()[0]
-        await cb.answer(f"🧬 Your DNA: {dna}", show_alert=True)
-
+        await cb.answer(f"🧬 Your DNA: {cr.fetchone()[0]}", show_alert=True)
     elif cb.data.startswith("setlang_"):
-        lang = cb.data.split("_")[1]
-        cr.execute("UPDATE users SET lang = ? WHERE user_id = ?", (lang, uid))
+        cr.execute("UPDATE users SET lang = ? WHERE user_id = ?", (cb.data.split("_")[1], uid))
         db.commit()
         await cb.message.edit_text("✅ Language Updated! Send movie name.")
-
     elif cb.data.startswith("req_"):
         await client.send_message(ADMIN_ID, f"📢 **Request:** {cb.data.split('_')[1]}\n👤 ID: {uid}")
         await cb.answer("✅ Requested!", show_alert=True)
-
     elif cb.data.startswith("wls_"):
-        # TMDB Watchlist addition logic
-        await cb.answer("✅ Added to Watchlist!", show_alert=True)
-
+        m_type, m_id = cb.data.split("_")[1], cb.data.split("_")[2]
+        _, _, _, title = get_extra_details(m_type, m_id)
+        cr.execute("INSERT OR IGNORE INTO watchlist (user_id, movie_id, movie_name) VALUES (?, ?, ?)", (uid, m_id, title))
+        db.commit()
+        await cb.answer(f"✅ Added to Watchlist: {title}", show_alert=True)
     elif cb.data == "open_settings":
         btns = InlineKeyboardMarkup([[InlineKeyboardButton("🌑 Dark Mode", callback_data="theme_dark"), InlineKeyboardButton("☀️ Light Mode", callback_data="theme_light")]])
         await cb.message.edit_text("🎨 **Settings**:", reply_markup=btns)
-
 # --- 14. LAUNCH ---
 if __name__ == "__main__":
     keep_alive()
