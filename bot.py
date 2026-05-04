@@ -4,7 +4,7 @@ import os
 import requests
 import sqlite3
 import asyncio
-import random  # Shayari ke liye zaroori hai
+import random
 from datetime import datetime
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InlineQueryResultArticle, InputTextMessageContent
@@ -123,7 +123,7 @@ async def trending_cmd(client, message):
         await message.reply_text("❌ Kuch dikat aa rahi hai trending nikalne mein.")
 
 # --- 8. START, REFER & EXTRA COMMANDS ---
-@bot_app.on_message(filters.command("start"))
+@bot_app.on_message(filters.command("start") & filters.private)
 async def start_cmd(client, message):
     uid = message.from_user.id
     now = datetime.now().strftime("%d-%m-%Y")
@@ -152,24 +152,13 @@ async def start_cmd(client, message):
         reply_markup=btns
     )
 
-@bot_app.on_message(filters.command("refer"))
+@bot_app.on_message(filters.command("refer") & filters.private)
 async def refer_cmd(client, message):
     bot_username = (await client.get_me()).username
     ref_link = f"https://t.me/{bot_username}?start={message.from_user.id}"
     await message.reply_text(f"🚀 **Your Referral Link:**\n`{ref_link}`\n\nHar join par milenge 10 points!")
 
-@bot_app.on_message(filters.command("watchparty"))
-async def watchparty_cmd(client, message):
-    instructions = (
-        "👥 **How to Start a Watchparty:**\n\n"
-        "1. Movie search karein.\n"
-        "2. **'Watch Together'** button par click karein.\n"
-        "3. Wahi link apne doston ko share karein.\n"
-        "4. Sab ek saath play button dabayein aur enjoy karein! 🍿"
-    )
-    await message.reply_text(instructions)
-
-@bot_app.on_message(filters.command("shayari"))
+@bot_app.on_message(filters.command("shayari") & filters.private)
 async def shayari_cmd(client, message):
     shayaris = [
         "Zindagi ek safar hai suhana, yahan kal kya ho kisne jaana...",
@@ -208,17 +197,25 @@ async def inline_netflix_search(client, query):
         ))
     await query.answer(results)
 
-# --- 10. MOVIE SEARCH ---
-@bot_app.on_message(filters.text & ~filters.command(["start", "add", "watchlist", "trending", "refer", "continue", "settings", "watchparty", "shayari"]))
+# --- 10. MOVIE SEARCH (FIXED LOOP ERROR) ---
+@bot_app.on_message(filters.text & filters.private & ~filters.me)
 async def movie_search(client, message):
+    # 1. Skip commands and bot's own messages
+    if message.text.startswith("/") or "🔎" in message.text:
+        return
+
     if not await is_subscribed(client, message): return
     
     cr.execute("SELECT lang FROM users WHERE user_id = ?", (message.from_user.id,))
     res = cr.fetchone()
-    # LANGUAGE ERROR FIX: Default to 'en' if not set
     user_lang = res[0] if res and res[0] else "en"
 
     query = message.text.lower().strip()
+    
+    # Check if query is too short
+    if len(query) < 2:
+        return
+        
     status_text = "🔎 Searching..." if user_lang == "en" else "🔎 Khoj raha hoon..."
     status = await message.reply_text(status_text)
     
@@ -246,15 +243,12 @@ async def movie_search(client, message):
                f"⭐ **Rating:** {item.get('vote_average', 'N/A')}/10\n👥 **Cast:** {cast}{suggestions}\n\n"
                f"✨ **Powered By Thakur Uttam**")
 
-    # BUTTONS MERGED PROPERLY
     btns = [
         [
             InlineKeyboardButton("📺 Stream Online", url=f"https://vidsrc.me/embed/{m_type}/{m_id}"),
             InlineKeyboardButton("🎬 Trailer", url=f"https://www.youtube.com/results?search_query={title.replace(' ', '+')}+trailer")
         ],
-        [
-            InlineKeyboardButton("🍿 Watch Together (Party)", url=f"https://vidsrc.me/embed/{m_type}/{m_id}")
-        ]
+        [InlineKeyboardButton("🍿 Watch Together (Party)", url=f"https://vidsrc.me/embed/{m_type}/{m_id}")]
     ]
     
     if local_data:
@@ -269,7 +263,7 @@ async def movie_search(client, message):
         await status.edit(caption, reply_markup=InlineKeyboardMarkup(btns))
 
 # --- 11. WATCHLIST & RESUME ---
-@bot_app.on_message(filters.command("watchlist"))
+@bot_app.on_message(filters.command("watchlist") & filters.private)
 async def show_watchlist(client, message):
     if not await is_subscribed(client, message): return
     uid = message.from_user.id
@@ -279,14 +273,14 @@ async def show_watchlist(client, message):
     text = "📑 **Your Watchlist:**\n\n" + "\n".join([f"{i+1}. {m[0]}" for i, m in enumerate(res)])
     await message.reply_text(text)
 
-@bot_app.on_message(filters.command("continue"))
+@bot_app.on_message(filters.command("continue") & filters.private)
 async def continue_cmd(client, message):
     cr.execute("SELECT movie_name, file_id FROM last_watch WHERE user_id = ?", (message.from_user.id,))
     res = cr.fetchone()
     if res:
         await client.send_cached_media(chat_id=message.chat.id, file_id=res[1], caption=f"⏯ **Continue Watching:** {res[0]}", protect_content=True)
     else:
-        await message.reply_text("❌ History nahi mili.")
+        await message.reply_text("❌ History nahi mila.")
 
 # --- 12. CALLBACKS ---
 @bot_app.on_callback_query()
