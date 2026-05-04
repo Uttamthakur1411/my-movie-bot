@@ -27,7 +27,7 @@ def keep_alive():
 # --- 2. CONFIGURATION ---
 API_ID = 34976268
 API_HASH = "3ccae7cee8251da06d019c49a6aedb9e"
-BOT_TOKEN = "8213871486:AAGxo8PnNzV28CvnCnz_lCRCOWN_9HxRXgg"
+BOT_TOKEN = "8213871486:AAECaJwnXmup3JEwEnV2cAKMGl3NCl9Y6A4"
 TMDB_KEY = "9309466d747d6bf6e91a81d01ec98cd0"
 FORCE_SUB_CHANNEL = "Movies_Uttam_Official" 
 ADMIN_ID = 5615686466 
@@ -336,4 +336,3 @@ async def cb_handler(client, cb):
 if __name__ == "__main__":
     keep_alive()
     bot_app.run()
-
