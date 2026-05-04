@@ -4,6 +4,7 @@ import os
 import requests
 import sqlite3
 import asyncio
+import random  # Shayari ke liye zaroori hai
 from datetime import datetime
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InlineQueryResultArticle, InputTextMessageContent
@@ -121,7 +122,7 @@ async def trending_cmd(client, message):
     except:
         await message.reply_text("❌ Kuch dikat aa rahi hai trending nikalne mein.")
 
-# --- 8. START & REFERRAL SYSTEM ---
+# --- 8. START, REFER & EXTRA COMMANDS ---
 @bot_app.on_message(filters.command("start"))
 async def start_cmd(client, message):
     uid = message.from_user.id
@@ -157,6 +158,26 @@ async def refer_cmd(client, message):
     ref_link = f"https://t.me/{bot_username}?start={message.from_user.id}"
     await message.reply_text(f"🚀 **Your Referral Link:**\n`{ref_link}`\n\nHar join par milenge 10 points!")
 
+@bot_app.on_message(filters.command("watchparty"))
+async def watchparty_cmd(client, message):
+    instructions = (
+        "👥 **How to Start a Watchparty:**\n\n"
+        "1. Movie search karein.\n"
+        "2. **'Watch Together'** button par click karein.\n"
+        "3. Wahi link apne doston ko share karein.\n"
+        "4. Sab ek saath play button dabayein aur enjoy karein! 🍿"
+    )
+    await message.reply_text(instructions)
+
+@bot_app.on_message(filters.command("shayari"))
+async def shayari_cmd(client, message):
+    shayaris = [
+        "Zindagi ek safar hai suhana, yahan kal kya ho kisne jaana...",
+        "Dil se roye magar honto se muskura beithe, hum unse wafa karke chot kha beithe.",
+        "Aapki dosti ne humein jeena sikha diya, har gam ko bhulana sikha diya."
+    ]
+    await message.reply_text(f"✍️ **Shayari for you:**\n\n_{random.choice(shayaris)}_")
+
 # --- 9. NETFLIX STYLE INLINE SEARCH ---
 @bot_app.on_inline_query()
 async def inline_netflix_search(client, query):
@@ -188,17 +209,17 @@ async def inline_netflix_search(client, query):
     await query.answer(results)
 
 # --- 10. MOVIE SEARCH ---
-@bot_app.on_message(filters.text & ~filters.command(["start", "add", "watchlist", "trending", "refer", "continue", "settings"]))
+@bot_app.on_message(filters.text & ~filters.command(["start", "add", "watchlist", "trending", "refer", "continue", "settings", "watchparty", "shayari"]))
 async def movie_search(client, message):
     if not await is_subscribed(client, message): return
     
     cr.execute("SELECT lang FROM users WHERE user_id = ?", (message.from_user.id,))
-    user_lang = cr.fetchone()
-    if not user_lang or not user_lang[0]:
-        return await message.reply_text("❌ Please select language first by typing /start")
+    res = cr.fetchone()
+    # LANGUAGE ERROR FIX: Default to 'en' if not set
+    user_lang = res[0] if res and res[0] else "en"
 
     query = message.text.lower().strip()
-    status_text = "🔎 Searching..." if user_lang[0] == "en" else "🔎 Khoj raha hoon..."
+    status_text = "🔎 Searching..." if user_lang == "en" else "🔎 Khoj raha hoon..."
     status = await message.reply_text(status_text)
     
     cr.execute("SELECT file_id, id, movie_name FROM files WHERE movie_name LIKE ?", (f"%{query}%",))
@@ -206,9 +227,8 @@ async def movie_search(client, message):
     results = get_tmdb_results(query)
 
     if not results and not local_data:
-        # Fixed Request Callback Data
         btn = InlineKeyboardMarkup([[InlineKeyboardButton("🎟 Request File", callback_data=f"req_{query[:15]}")]])
-        error_msg = f"❌ '{query}' not found." if user_lang[0] == "en" else f"❌ '{query}' nahi mila."
+        error_msg = f"❌ '{query}' not found." if user_lang == "en" else f"❌ '{query}' nahi mila."
         return await status.edit(error_msg, reply_markup=btn)
 
     item = results[0] if results else {'id': 0, 'title': local_data[2], 'media_type': 'movie'}
@@ -226,10 +246,16 @@ async def movie_search(client, message):
                f"⭐ **Rating:** {item.get('vote_average', 'N/A')}/10\n👥 **Cast:** {cast}{suggestions}\n\n"
                f"✨ **Powered By Thakur Uttam**")
 
-    btns = [[
-        InlineKeyboardButton("📺 Stream Online", url=f"https://vidsrc.me/embed/{m_type}/{m_id}"),
-        InlineKeyboardButton("🎬 Trailer", url=f"https://www.youtube.com/results?search_query={title.replace(' ', '+')}+trailer")
-    ]]
+    # BUTTONS MERGED PROPERLY
+    btns = [
+        [
+            InlineKeyboardButton("📺 Stream Online", url=f"https://vidsrc.me/embed/{m_type}/{m_id}"),
+            InlineKeyboardButton("🎬 Trailer", url=f"https://www.youtube.com/results?search_query={title.replace(' ', '+')}+trailer")
+        ],
+        [
+            InlineKeyboardButton("🍿 Watch Together (Party)", url=f"https://vidsrc.me/embed/{m_type}/{m_id}")
+        ]
+    ]
     
     if local_data:
         btns.insert(0, [InlineKeyboardButton("📥 Download Movie (Protected)", callback_data=f"dl_{local_data[1]}")] )
@@ -267,7 +293,6 @@ async def continue_cmd(client, message):
 async def cb_handler(client, cb):
     uid = cb.from_user.id
     
-    # REQUEST FEATURE LOGIC (FIXED)
     if cb.data.startswith("req_"):
         movie_req = cb.data.split("_")[1]
         await client.send_message(ADMIN_ID, f"📢 **New Movie Request!**\n\n🎬 **Name:** {movie_req}\n👤 **User ID:** `{uid}`\n👤 **Name:** {cb.from_user.first_name}")
