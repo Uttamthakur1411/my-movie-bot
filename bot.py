@@ -60,6 +60,8 @@ def init_db():
 init_db()
 
 # ==================== 1. AUTO-DELETE ANTI-PIRACY 🔥 ====================
+auto_delete_tasks = {}
+
 async def auto_delete_file(chat_id, message_id, movie_name):
     """5 Minutes Auto-Delete Protection"""
     await asyncio.sleep(300)  # 5 minutes
@@ -234,7 +236,7 @@ async def start_cmd(client, message):
     )
 
 # ==================== MOVIE SEARCH ENGINE 🔍 ====================
-@app.on_message(filters.text & ~filters.command(["start", "buy", "ban", "unban", "addpoints", "broadcast"]))
+@app.on_message(filters.text & ~filters.command(["start", "buy", "ban", "unban", "addpoints", "broadcast", "stats"]))
 async def search_movies(client, message):
     user_id = message.from_user.id
     
@@ -245,24 +247,30 @@ async def search_movies(client, message):
     status = await message.reply_text("🔎 **Searching movies...**")
     
     # Check real database
-    cursor.execute("SELECT id, name, file_id FROM movies WHERE name LIKE ?", (f"%{query}%",))
+    cursor.execute("SELECT id, name, file_id FROM movies WHERE LOWER(name) LIKE LOWER(?)", (f"%{query}%",))
     movies = cursor.fetchall()
     
     # Demo movies if none found
     if not movies:
         movies = [
-            (1, f"{query} Full HD [Demo]", "demo_123"),
-            (2, f"{query} Hindi Dubbed [Demo]", "demo_456")
+            (1, f"🔥 {query} Full HD 2024", "demo_123"),
+            (2, f"🎬 {query} Hindi Dubbed", "demo_456"),
+            (3, f"📱 {query} 720p", "demo_789")
         ]
     
-    text = f"🎬 **Results for '{query}'** ({len(movies)} found)\n\n"
+    text = f"""🎬 **Search Results for '{query}'**
+━━━━━━━━━━━━━━━━━━━━
+📊 **{len(movies)} Movies Found**
+
+"""
     btns = []
     
-    for movie in movies[:5]:
-        text += f"📱 {movie[1]}\n"
-        btns.append([InlineKeyboardButton(f"📥 Download ({movie[1]})", callback_data=f"dl_{movie[0]}")])
+    for movie in movies[:8]:
+        text += f"🎥 **{movie[1]}**\n"
+        btns.append([InlineKeyboardButton(f"📥 Download {movie[1][:20]}...", callback_data=f"dl_{movie[0]}")])
     
     btns.append([InlineKeyboardButton("🔍 New Search", callback_data="search_menu")])
+    btns.append([InlineKeyboardButton("💰 Buy Points", callback_data="buy_menu")])
     
     await status.edit_text(text, reply_markup=InlineKeyboardMarkup(btns))
 
@@ -313,6 +321,7 @@ async def download_movie(client, callback_query):
             await callback_query.answer("✅ **Movie Sent!**\n🕐 **Deletes in 5min**", show_alert=True)
             
         except Exception as e:
+            print(f"Real file error: {e}")
             # Fallback demo video
             movie_msg = await client.send_video(
                 chat_id=user_id,
@@ -321,11 +330,12 @@ async def download_movie(client, callback_query):
 
 🪙 **-5 Points**
 🗑️ **AUTO DELETES IN 5 MINS**
-🔒 **protect_content=True**""",
+🔒 **protect_content=True**
+⚠️ **Real file error**""",
                 protect_content=True
             )
             asyncio.create_task(auto_delete_file(user_id, movie_msg.id, movie[0]))
-            await callback_query.answer("✅ **Demo Sent!** (Real file error)", show_alert=True)
+            await callback_query.answer("✅ **Demo Sent!**\n(Real file error)", show_alert=True)
     else:
         await callback_query.answer("❌ **Movie not found**", show_alert=True)
 
@@ -333,30 +343,41 @@ async def download_movie(client, callback_query):
 @app.on_callback_query(filters.regex(r"^(search_menu|buy_menu|my_points)$"))
 async def menu_callbacks(client, callback_query):
     data = callback_query.data
+    user_id = callback_query.from_user.id
     
     if data == "buy_menu":
         await buy_cmd(client, callback_query.message)
     elif data == "search_menu":
         await callback_query.message.edit_text(
-            "🔍 **SEARCH MOVIES**\n\n"
-            "Type: `Avengers`, `Jawan`, `Pathaan`\n"
-            "✅ Real database search\n"
-            "🗑️ 5min auto-delete"
+            """🔍 **SEARCH MOVIES**
+
+💡 **Just type movie name:**
+- Avengers
+- Jawan  
+- Pathaan
+- Animal
+
+✅ **Real database search**
+🗑️ **5min auto-delete**
+📥 **5 Points per download**"""
         )
     elif data == "my_points":
-        cursor.execute("SELECT points FROM users WHERE user_id=?", (callback_query.from_user.id,))
+        cursor.execute("SELECT points FROM users WHERE user_id=?", (user_id,))
         points = cursor.fetchone()[0]
         await callback_query.message.edit_text(
-            f"🪙 **Your Points: {points}**\n\n"
-            f"📥 **Download = 5 Points**\n"
-            f"💰 **/buy** to recharge"
+            f"""🪙 **Your Points: {points}**
+
+📥 **Download = 5 Points**
+💰 **Low balance? /buy**
+
+🔥 **Free 50 Points** = New users"""
         )
 
 @app.on_callback_query(filters.regex(r"^pay(100|500)"))
 async def payment_info(client, callback_query):
     points = "100" if "100" in callback_query.data else "500"
     price = "₹20" if "100" in callback_query.data else "₹90"
-    await callback_query.answer(f"💰 **{points} Points = {price}**\nSend payment to {UPI_LINK}", show_alert=True)
+    await callback_query.answer(f"💰 **{points} Points = {price}**\n📱 Pay to: {UPI_LINK}", show_alert=True)
 
 # ==================== STATS FOR ADMIN ====================
 @app.on_message(filters.command("stats") & filters.user(ADMIN_ID))
