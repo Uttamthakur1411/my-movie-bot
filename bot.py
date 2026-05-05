@@ -4,417 +4,319 @@ import os
 import requests
 import sqlite3
 import asyncio
+import random
 from datetime import datetime
 from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.errors import FloodWait
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InlineQueryResultArticle, InputTextMessageContent
 
-print("🚀 Movie Bot Pro - Starting...")
-
-# Flask Keep-Alive
-flask_app = Flask(__name__)
+# --- 1. RENDER PORT BINDING (For 24/7 Deployment) ---
+flask_app = Flask('')
 
 @flask_app.route('/')
 def home():
-    return "✅ Movie Bot Pro - All 4 Features ACTIVE!"
+    return "Bot is alive and running smoothly!"
 
 def run_flask():
-    port = int(os.environ.get('PORT', 8080))
+    port = int(os.environ.get("PORT", 8080))
     flask_app.run(host='0.0.0.0', port=port)
 
-# ==================== CONFIG ====================
+def keep_alive():
+    t = Thread(target=run_flask)
+    t.start()
+
+# --- 2. CONFIGURATION (Apne Credentials Daalein) ---
 API_ID = 34976268
 API_HASH = "3ccae7cee8251da06d019c49a6aedb9e"
 BOT_TOKEN = "8213871486:AAECaJwnXmup3JEwEnV2cAKMGl3NCl9Y6A4"
-ADMIN_ID = 5615686466
-UPI_LINK = "yourupi@paytm"  # 🔥 CHANGE THIS
-CHANNEL = "@Movies_Uttam_Official"
+TMDB_KEY = "9309466d747d6bf6e91a81d01ec98cd0"
+FORCE_SUB_CHANNEL = "Movies_Uttam_Official" 
+ADMIN_ID = 5615686466 
 
-app = Client("movie_bot_pro", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+bot_app = Client("Movie_Pro_Netflix_Final", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# ==================== DATABASE ====================
-db = sqlite3.connect('movies_pro.db', check_same_thread=False)
-cursor = db.cursor()
+# --- 3. HARDENED DATABASE SETUP ---
+db = sqlite3.connect("bot_data.db", check_same_thread=False)
+cr = db.cursor()
 
 def init_db():
-    cursor.execute('''CREATE TABLE IF NOT EXISTS users (
-        user_id INTEGER PRIMARY KEY, 
-        points INTEGER DEFAULT 50, 
-        is_banned INTEGER DEFAULT 0,
-        joined_date TEXT DEFAULT CURRENT_TIMESTAMP
-    )''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS movies (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, 
-        name TEXT, 
-        file_id TEXT
-    )''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS temp_files (
-        message_id INTEGER, 
-        chat_id INTEGER, 
-        movie_name TEXT,
-        expire_time TEXT
-    )''')
+    cr.execute("""CREATE TABLE IF NOT EXISTS users (
+        user_id INTEGER UNIQUE, joined_date TEXT, lang TEXT DEFAULT 'en', 
+        points INTEGER DEFAULT 50, is_premium INTEGER DEFAULT 0, theme TEXT DEFAULT 'dark'
+    )""")
+    cr.execute("CREATE TABLE IF NOT EXISTS files (id INTEGER PRIMARY KEY AUTOINCREMENT, movie_name TEXT, file_id TEXT, clicks INTEGER DEFAULT 0)")
+    cr.execute("CREATE TABLE IF NOT EXISTS watchlist (user_id INTEGER, movie_id TEXT, movie_name TEXT)")
+    cr.execute("CREATE TABLE IF NOT EXISTS last_watch (user_id INTEGER UNIQUE, movie_name TEXT, file_id TEXT)")
+    cr.execute("CREATE TABLE IF NOT EXISTS search_logs (query TEXT, count INTEGER DEFAULT 1)")
     db.commit()
-    print("✅ Database Ready with all tables!")
 
 init_db()
 
-# ==================== 1. AUTO-DELETE ANTI-PIRACY 🔥 ====================
-auto_delete_tasks = {}
-
-async def auto_delete_file(chat_id, message_id, movie_name):
-    """5 Minutes Auto-Delete Protection"""
-    await asyncio.sleep(300)  # 5 minutes
+# --- 4. TMDB ENGINE (With Extra Details) ---
+def get_tmdb_results(query):
     try:
-        await app.delete_messages(chat_id, message_id)
-        print(f"🗑️ ANTI-PIRACY: Deleted {movie_name} from {chat_id}")
-        cursor.execute("DELETE FROM temp_files WHERE message_id=? AND chat_id=?", (message_id, chat_id))
+        cr.execute("INSERT INTO search_logs (query) VALUES (?) ON CONFLICT(query) DO UPDATE SET count = count + 1", (query.lower(),))
         db.commit()
-    except Exception as e:
-        print(f"Delete error: {e}")
+    except: pass # Ignore DB lock errors for analytics
 
-# ==================== 2. BAN SYSTEM 🚫 ====================
-def is_banned(user_id):
-    cursor.execute("SELECT is_banned FROM users WHERE user_id=?", (user_id,))
-    result = cursor.fetchone()
-    return result and result[0] == 1
-
-@app.on_message(filters.command("ban") & filters.user(ADMIN_ID))
-async def ban_cmd(client, message):
+    url = f"https://api.themoviedb.org/3/search/multi?api_key={TMDB_KEY}&query={query}&include_adult=false"
     try:
-        user_id = int(message.command[1])
-        cursor.execute("UPDATE users SET is_banned=1 WHERE user_id=?", (user_id,))
-        db.commit()
-        await message.reply_text(f"🚫 **User BANNED:** `{user_id}`\n✅ No more access!")
-        print(f"BANNED: {user_id}")
-    except:
-        await message.reply_text("❌ **Usage:** `/ban 123456789`")
+        res = requests.get(url, timeout=10).json().get('results', [])
+        return [r for r in res if r.get('media_type') in ['movie', 'tv']]
+    except: return []
 
-@app.on_message(filters.command("unban") & filters.user(ADMIN_ID))
-async def unban_cmd(client, message):
+def get_extra_details(m_type, m_id):
+    url = f"https://api.themoviedb.org/3/{m_type}/{m_id}?api_key={TMDB_KEY}&append_to_response=credits"
     try:
-        user_id = int(message.command[1])
-        cursor.execute("UPDATE users SET is_banned=0 WHERE user_id=?", (user_id,))
-        db.commit()
-        await message.reply_text(f"✅ **User UNBANNED:** `{user_id}`")
-        print(f"UNBANNED: {user_id}")
-    except:
-        await message.reply_text("❌ **Usage:** `/unban 123456789`")
+        res = requests.get(url, timeout=10).json()
+        genres = ", ".join([g['name'] for g in res.get('genres', [])[:3]]) or "N/A"
+        runtime = f"{res.get('runtime', 0)} min" if m_type == "movie" else f"{res.get('episode_run_time', [0])[0]} min/ep"
+        cast = ", ".join([c['name'] for c in res.get('credits', {}).get('cast', [])[:3]]) or "N/A"
+        return genres, runtime, cast
+    except: return "N/A", "N/A", "N/A"
 
-@app.on_message(filters.command("bannedlist") & filters.user(ADMIN_ID))
-async def banned_list_cmd(client, message):
-    cursor.execute("SELECT user_id FROM users WHERE is_banned=1")
-    banned = cursor.fetchall()
-    if not banned:
-        return await message.reply_text("✅ **No banned users!**")
-    text = "🚫 **BANNED USERS:**\n\n"
-    for user in banned[:15]:
-        text += f"👤 `{user[0]}`\n"
+# --- 5. STRICT AUTH & SUBSCRIPTION CHECK ---
+async def check_auth(client, message):
+    if not FORCE_SUB_CHANNEL: return True
+    try:
+        await client.get_chat_member(FORCE_SUB_CHANNEL, message.from_user.id)
+        return True
+    except Exception:
+        btn = InlineKeyboardMarkup([[InlineKeyboardButton("Join Channel 📢", url=f"https://t.me/{FORCE_SUB_CHANNEL}")]])
+        await message.reply_text("❌ **Access Denied!**\nBot use karne ke liye hamare channel ko join karein.", reply_markup=btn)
+        return False
+
+# --- 6. ADMIN PRO FEATURES (Broadcast, Stats & Add) ---
+@bot_app.on_message(filters.command("broadcast") & filters.user(ADMIN_ID))
+async def broadcast_handler(client, message):
+    if not message.reply_to_message:
+        return await message.reply_text("❌ Reply to a message to broadcast!")
+    
+    cr.execute("SELECT user_id FROM users")
+    users = cr.fetchall()
+    count = 0
+    msg = await message.reply_text(f"🚀 Starting Broadcast to {len(users)} users...")
+    
+    for user in users:
+        try:
+            await message.reply_to_message.copy(user[0])
+            count += 1
+            await asyncio.sleep(0.1)
+        except: pass
+    await msg.edit(f"✅ **Broadcast Finished!**\nSent successfully to: {count} users.")
+
+@bot_app.on_message(filters.command("stats") & filters.user(ADMIN_ID))
+async def stats_handler(client, message):
+    cr.execute("SELECT COUNT(*) FROM users")
+    t_users = cr.fetchone()[0]
+    cr.execute("SELECT COUNT(*) FROM files")
+    t_files = cr.fetchone()[0]
+    await message.reply_text(f"📊 **Bot Analytics:**\n\n👤 Total Users: {t_users}\n🎬 Total Movies: {t_files}")
+
+@bot_app.on_message((filters.document | filters.video) & filters.user(ADMIN_ID))
+async def smart_add_handler(client, message):
+    if message.caption:
+        m_name = message.caption.strip().lower()
+        f_id = message.document.file_id if message.document else message.video.file_id
+        try:
+            cr.execute("INSERT INTO files (movie_name, file_id) VALUES (?, ?)", (m_name, f_id))
+            db.commit()
+            await message.reply_text(f"✅ **Auto-Added to DB!**\n🎬 Name: `{m_name}`")
+        except Exception as e:
+            await message.reply_text(f"❌ Error: {e}")
+    else:
+        f_id = message.document.file_id if message.document else message.video.file_id
+        await message.reply_text(f"🆔 **File ID:** `{f_id}`\n\n(Tip: Add movie name in caption to auto-save)")
+
+# --- 7. COMMANDS (Start, Refer, Watchlist, Continue) ---
+@bot_app.on_message(filters.command("start") & filters.private)
+async def start_cmd(client, message):
+    uid = message.from_user.id
+    now = datetime.now().strftime("%d-%m-%Y")
+    
+    if len(message.command) > 1 and message.command[1].isdigit():
+        ref_id = int(message.command[1])
+        cr.execute("SELECT user_id FROM users WHERE user_id = ?", (uid,))
+        if not cr.fetchone() and ref_id != uid:
+            cr.execute("UPDATE users SET points = points + 20 WHERE user_id = ?", (ref_id,))
+            try: await client.send_message(ref_id, "🎁 **Referral Bonus!** Aapko 20 points mile naye user ke liye.")
+            except: pass
+
+    # Set default language explicitly
+    cr.execute("INSERT OR IGNORE INTO users (user_id, joined_date, lang) VALUES (?, ?, 'en')", (uid, now))
+    db.commit()
+
+    cr.execute("SELECT lang FROM users WHERE user_id = ?", (uid,))
+    user_lang = cr.fetchone()[0]
+
+    if user_lang == 'en':
+        welcome_text = f"🔥 **Welcome {message.from_user.first_name}!**\n\nI am an advanced Netflix-style movie bot.\n✅ Search & Stream\n✅ Create Watchlists\n✅ Earn Points"
+    else:
+        welcome_text = f"🔥 **Namaste {message.from_user.first_name}!**\n\nMain ek advanced movie bot hoon.\n✅ Filmein khojein aur dekhein\n✅ Watchlist banayein\n✅ Points kamayein"
+
+    btns = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔥 Trending", callback_data="trending_data"), InlineKeyboardButton("📑 Watchlist", callback_data="show_wls")],
+        [InlineKeyboardButton("🚀 Refer & Earn", callback_data="refer_info"), InlineKeyboardButton("🇺🇸 / 🇮🇳 Change Lang", callback_data="change_lang")]
+    ])
+    await message.reply_text(welcome_text, reply_markup=btns)
+
+@bot_app.on_message(filters.command("watchlist") & filters.private)
+async def show_watchlist_cmd(client, message):
+    if not await check_auth(client, message): return
+    uid = message.from_user.id
+    cr.execute("SELECT movie_name FROM watchlist WHERE user_id = ?", (uid,))
+    res = cr.fetchall()
+    if not res: return await message.reply_text("📑 Aapki watchlist abhi khali hai. Movies search karke '+' dabayein!")
+    
+    text = "📑 **Your Watchlist:**\n\n" + "\n".join([f"🎬 {m[0]}" for m in res])
     await message.reply_text(text)
 
-# ==================== 3. UPI PAYMENT 💰 ====================
-@app.on_message(filters.command("buy"))
-async def buy_cmd(client, message):
-    if is_banned(message.from_user.id):
-        return await message.reply_text("🚫 **You are BANNED**")
-    
-    btns = InlineKeyboardMarkup([
-        [InlineKeyboardButton("💰 ₹20 = 100 Points", callback_data="pay100")],
-        [InlineKeyboardButton("💎 ₹90 = 500 Points", callback_data="pay500")],
-        [InlineKeyboardButton("📱 UPI QR", url=f"https://chart.googleapis.com/chart?chs=300x300&cht=qr&chl=upi://pay?pa={UPI_LINK}&pn=MovieBot")]
-    ])
-    
-    await message.reply_text(
-        f"""💳 **BUY POINTS INSTANTLY**
-
-🔗 **UPI:** `{UPI_LINK}`
-
-💵 **₹20** → **100 Points**
-💎 **₹90** → **500 Points**
-
-✅ Pay → Send SS to admin
-⚡ Admin adds points in 1 min!
-
-**Payment Proof bhejo: @{await client.get_me().username}**""",
-        reply_markup=btns,
-        disable_web_page_preview=True
-    )
-
-@app.on_message(filters.command("addpoints") & filters.user(ADMIN_ID))
-async def add_points_cmd(client, message):
-    try:
-        user_id = int(message.command[1])
-        points = int(message.command[2])
-        cursor.execute("UPDATE users SET points = points + ? WHERE user_id=?", (points, user_id))
-        db.commit()
-        await message.send_message(user_id, f"🎉 **{points} Points Added!**\nThank you for payment! 💰")
-        await message.reply_text(f"✅ **{points} Points** → `{user_id}` ✅")
-    except Exception as e:
-        await message.reply_text(f"❌ **Error:** `/addpoints 123456789 100`")
-
-# ==================== 4. PHOTO BROADCAST 📸 ====================
-@app.on_message(filters.command("broadcast") & filters.user(ADMIN_ID))
-async def broadcast_cmd(client, message):
-    if not message.reply_to_message:
-        return await message.reply_text("❌ **REPLY TO PHOTO/VIDEO/TEXT** for broadcast!")
-    
-    cursor.execute("SELECT user_id FROM users WHERE is_banned=0")
-    users = [row[0] for row in cursor.fetchall()]
-    
-    if not users:
-        return await message.reply_text("❌ **No active users!**")
-    
-    status_msg = await message.reply_text(f"🚀 **Broadcasting** → {len(users)} users...")
-    sent = 0
-    
-    for user_id in users[:200]:  # Safety limit
+@bot_app.on_message(filters.command("continue") & filters.private)
+async def continue_cmd(client, message):
+    if not await check_auth(client, message): return
+    cr.execute("SELECT movie_name, file_id FROM last_watch WHERE user_id = ?", (message.from_user.id,))
+    res = cr.fetchone()
+    if res:
         try:
-            await message.reply_to_message.copy(user_id)
-            sent += 1
-            await asyncio.sleep(0.08)
+            await client.send_cached_media(chat_id=message.chat.id, file_id=res[1], caption=f"⏯ **Resume:** {res[0]}", protect_content=True)
         except:
-            pass
-    
-    await status_msg.edit_text(
-        f"✅ **BROADCAST COMPLETE!**\n\n"
-        f"📤 **Sent:** {sent}/{len(users)}\n"
-        f"⏰ **Time:** {datetime.now().strftime('%H:%M:%S')}"
-    )
-
-# ==================== ADMIN ADD MOVIE 🎬 ====================
-@app.on_message((filters.document | filters.video) & filters.user(ADMIN_ID))
-async def add_movie(client, message):
-    if message.caption:
-        movie_name = message.caption
-        file_id = message.document.file_id if message.document else message.video.file_id
-        cursor.execute("INSERT INTO movies (name, file_id) VALUES (?, ?)", (movie_name, file_id))
-        db.commit()
-        await message.reply_text(
-            f"✅ **MOVIE ADDED TO DB!**\n"
-            f"🎬 **{movie_name}**\n"
-            f"🆔 `{file_id[:30]}...`"
-        )
+            await message.reply_text("❌ File unavailable or deleted.")
     else:
-        file_id = message.document.file_id if message.document else message.video.file_id
-        await message.reply_text(f"🆔 **File ID:** `{file_id}`\n💡 **Add movie name in caption!**")
+        await message.reply_text("❌ Aapne abhi tak koi movie download nahi ki hai.")
 
-# ==================== START COMMAND 🎉 ====================
-@app.on_message(filters.command("start"))
-async def start_cmd(client, message):
-    user_id = message.from_user.id
-    
-    if is_banned(user_id):
-        return await message.reply_text("🚫 **You are PERMANENTLY BANNED!**")
-    
-    cursor.execute("INSERT OR IGNORE INTO users (user_id, points) VALUES (?, 50)", (user_id,))
-    cursor.execute("SELECT points FROM users WHERE user_id=?", (user_id,))
-    points = cursor.fetchone()[0]
-    db.commit()
-    
-    btns = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔍 Search Movies", callback_data="search_menu")],
-        [InlineKeyboardButton("💰 Buy Points", callback_data="buy_menu")],
-        [InlineKeyboardButton("📊 My Points", callback_data="my_points")]
-    ])
-    
-    await message.reply_text(
-        f"""🔥 **Movie Bot Pro v2.0**
+# --- 8. MOVIE SEARCH ENGINE (Strict Restrictions Applied) ---
+@bot_app.on_message(filters.text & filters.private & ~filters.me)
+async def movie_search(client, message):
+    if message.text.startswith("/") or len(message.text) < 2: return
+    if not await check_auth(client, message): return
 
-🎬 **Features:**
-✅ Movie Search & Download
-🗑️ **5min Auto-Delete** (Anti-Piracy)
-💰 UPI Payment System
-🚫 Admin Ban Protection
-📸 Photo Broadcast
+    query = message.text.lower().strip()
+    status = await message.reply_text("🔎 **Searching...**")
 
-**Just type movie name!** 🎥
+    # Local DB Check
+    cr.execute("SELECT id, movie_name, file_id FROM files WHERE movie_name LIKE ?", (f"%{query}%",))
+    local_data = cr.fetchone()
+    
+    # TMDB Check
+    results = get_tmdb_results(query)
 
-🪙 **Your Points: {points}**
-💡 **Download = 5 Points**""",
-        reply_markup=btns,
-        disable_web_page_preview=True
-    )
+    if not results and not local_data:
+        btn = InlineKeyboardMarkup([[InlineKeyboardButton("🎟 Request Movie", callback_data=f"req_{query[:20]}")]])
+        return await status.edit(f"❌ **'{query}'** not found in database.", reply_markup=btn)
 
-# ==================== MOVIE SEARCH ENGINE 🔍 ====================
-@app.on_message(filters.text & ~filters.command(["start", "buy", "ban", "unban", "addpoints", "broadcast", "stats"]))
-async def search_movies(client, message):
-    user_id = message.from_user.id
-    
-    if is_banned(user_id):
-        return await message.reply_text("🚫 **BANNED USER**")
-    
-    query = message.text.strip()
-    status = await message.reply_text("🔎 **Searching movies...**")
-    
-    # Check real database
-    cursor.execute("SELECT id, name, file_id FROM movies WHERE LOWER(name) LIKE LOWER(?)", (f"%{query}%",))
-    movies = cursor.fetchall()
-    
-    # Demo movies if none found
-    if not movies:
-        movies = [
-            (1, f"🔥 {query} Full HD 2024", "demo_123"),
-            (2, f"🎬 {query} Hindi Dubbed", "demo_456"),
-            (3, f"📱 {query} 720p", "demo_789")
-        ]
-    
-    text = f"""🎬 **Search Results for '{query}'**
-━━━━━━━━━━━━━━━━━━━━
-📊 **{len(movies)} Movies Found**
+    # Compile data
+    item = results[0] if results else {'id': 0, 'title': local_data[1], 'media_type': 'movie'}
+    m_id, m_type = item.get('id', 0), item.get('media_type', 'movie')
+    title = item.get('title') or item.get('name')
+    genres, runtime, cast = get_extra_details(m_type, m_id)
+    poster = f"https://image.tmdb.org/t/p/w500{item.get('poster_path')}" if item.get('poster_path') else "https://telegra.ph/file/default.jpg"
 
-"""
-    btns = []
-    
-    for movie in movies[:8]:
-        text += f"🎥 **{movie[1]}**\n"
-        btns.append([InlineKeyboardButton(f"📥 Download {movie[1][:20]}...", callback_data=f"dl_{movie[0]}")])
-    
-    btns.append([InlineKeyboardButton("🔍 New Search", callback_data="search_menu")])
-    btns.append([InlineKeyboardButton("💰 Buy Points", callback_data="buy_menu")])
-    
-    await status.edit_text(text, reply_markup=InlineKeyboardMarkup(btns))
+    caption = (f"🎬 **{title}**\n\n🎭 **Genre:** {genres}\n⏳ **Runtime:** {runtime}\n"
+               f"⭐ **Rating:** {item.get('vote_average', 'N/A')}/10\n👥 **Cast:** {cast}\n\n"
+               f"✨ **Powered By Thakur Uttam**")
 
-# ==================== DOWNLOAD w/ AUTO-DELETE 🔥 ====================
-@app.on_callback_query(filters.regex(r"^dl_"))
-async def download_movie(client, callback_query):
-    user_id = callback_query.from_user.id
+    btns = [
+        [
+            InlineKeyboardButton("📺 Play Online", url=f"https://vidsrc.me/embed/{m_type}/{m_id}"),
+            InlineKeyboardButton("🎬 Trailer", url=f"https://www.youtube.com/results?search_query={title.replace(' ', '+')}+trailer")
+        ],
+        [InlineKeyboardButton("➕ Add Watchlist", callback_data=f"wls_{m_id}")]
+    ]
     
-    if is_banned(user_id):
-        await callback_query.answer("🚫 **BANNED**", show_alert=True)
-        return
-    
-    movie_id = callback_query.data.split("_")[1]
-    
-    # Points check
-    cursor.execute("SELECT points FROM users WHERE user_id=?", (user_id,))
-    points_data = cursor.fetchone()
-    if not points_data or points_data[0] < 5:
-        await callback_query.answer("❌ **Need 5+ Points!**\n💰 Use /buy", show_alert=True)
-        return
-    
-    # Get movie
-    cursor.execute("SELECT name, file_id FROM movies WHERE id=?", (movie_id,))
-    movie = cursor.fetchone()
-    
-    if movie:
-        # Deduct points
-        cursor.execute("UPDATE users SET points = points - 5 WHERE user_id=?", (user_id,))
-        db.commit()
-        
-        try:
-            # Send REAL file from DB
-            movie_msg = await client.send_cached_media(
-                chat_id=user_id,
-                file_id=movie[1],
-                caption=f"""🎬 **{movie[0]}**
+    if local_data:
+        btns.insert(0, [InlineKeyboardButton("📥 Download Movie (5 Points)", callback_data=f"dl_{local_data[0]}")] )
 
-🪙 **-5 Points Deducted**
-🗑️ **AUTO DELETES IN 5 MINS**
-🔒 **Cannot Forward**
-⚠️ **Anti-Piracy Active**""",
-                protect_content=True
-            )
+    try:
+        await message.reply_photo(photo=poster, caption=caption, reply_markup=InlineKeyboardMarkup(btns))
+        await status.delete()
+    except Exception:
+        await status.edit(caption, reply_markup=InlineKeyboardMarkup(btns))
+
+# --- 9. CALLBACK HANDLERS ---
+@bot_app.on_callback_query()
+async def handle_callbacks(client, cb):
+    uid = cb.from_user.id
+    data = cb.data
+    
+    try:
+        if data == "trending_data":
+            res = requests.get(f"https://api.themoviedb.org/3/trending/all/day?api_key={TMDB_KEY}").json().get('results', [])[:10]
+            text = "🔥 **Top 10 Trending Today:**\n\n"
+            for i, m in enumerate(res, 1): text += f"{i}. {m.get('title') or m.get('name')}\n"
+            await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="back_start")]]))
+
+        elif data == "refer_info":
+            bot_user = (await client.get_me()).username
+            cr.execute("SELECT points FROM users WHERE user_id = ?", (uid,))
+            pts = cr.fetchone()[0]
+            link = f"https://t.me/{bot_user}?start={uid}"
+            await cb.message.edit_text(f"🚀 **Referral System**\n\n🪙 Your Points: **{pts}**\n\nShare this link to get 20 points per join:\n`{link}`", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="back_start")]]))
+
+        elif data == "show_wls":
+            cr.execute("SELECT movie_name FROM watchlist WHERE user_id = ?", (uid,))
+            res = cr.fetchall()
+            text = "📑 **Your Watchlist:**\n\n" + "\n".join([f"🎬 {m[0]}" for m in res]) if res else "📑 Watchlist is empty!"
+            await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="back_start")]]))
+
+        elif data == "change_lang":
+            btns = InlineKeyboardMarkup([[InlineKeyboardButton("English 🇺🇸", callback_data="setlang_en"), InlineKeyboardButton("Hindi 🇮🇳", callback_data="setlang_hi")]])
+            await cb.message.edit_text("🌍 Select your language:", reply_markup=btns)
+
+        elif data.startswith("setlang_"):
+            lang = data.split("_")[1]
+            cr.execute("UPDATE users SET lang = ? WHERE user_id = ?", (lang, uid))
+            db.commit()
+            msg = "✅ Language locked to English!" if lang == "en" else "✅ Bhasha Hindi par set ho gayi hai!"
+            await cb.answer(msg, show_alert=True)
+            await start_cmd(client, cb.message) # Restart menu
+
+        elif data.startswith("req_"):
+            req_movie = data.split("_")[1]
+            await client.send_message(ADMIN_ID, f"📢 **Movie Request:** {req_movie}\n👤 **User ID:** `{uid}`")
+            await cb.answer("✅ Request sent to Admin!", show_alert=True)
+
+        elif data.startswith("wls_"):
+            m_id = data.split("_")[1]
+            try:
+                m_name = requests.get(f"https://api.themoviedb.org/3/movie/{m_id}?api_key={TMDB_KEY}").json().get('title', 'Unknown')
+            except: m_name = "Saved Movie"
             
-            # 🚀 START AUTO-DELETE TIMER
-            asyncio.create_task(auto_delete_file(user_id, movie_msg.id, movie[0]))
+            cr.execute("INSERT INTO watchlist (user_id, movie_id, movie_name) VALUES (?, ?, ?)", (uid, m_id, m_name))
+            db.commit()
+            await cb.answer(f"✅ Added {m_name} to Watchlist!", show_alert=True)
+
+        elif data.startswith("dl_"):
+            # Fetch points
+            cr.execute("SELECT points FROM users WHERE user_id = ?", (uid,))
+            points_row = cr.fetchone()
+            points = points_row[0] if points_row else 0
             
-            await callback_query.answer("✅ **Movie Sent!**\n🕐 **Deletes in 5min**", show_alert=True)
+            if points < 5:
+                return await cb.answer("❌ Kam se kam 5 points chahiye! /refer karke points badhayein.", show_alert=True)
             
-        except Exception as e:
-            print(f"Real file error: {e}")
-            # Fallback demo video
-            movie_msg = await client.send_video(
-                chat_id=user_id,
-                video="https://sample-videos.com/zip/10/mp4/SampleVideo_1280x720_1mb.mp4",
-                caption=f"""🎬 **{movie[0]} - Demo**
+            file_db_id = data.split("_")[1]
+            cr.execute("SELECT file_id, movie_name FROM files WHERE id = ?", (file_db_id,))
+            res = cr.fetchone()
+            
+            if res:
+                # Deduct points & Update Last Watch
+                cr.execute("UPDATE users SET points = points - 5 WHERE user_id = ?", (uid,))
+                cr.execute("INSERT OR REPLACE INTO last_watch (user_id, movie_name, file_id) VALUES (?, ?, ?)", (uid, res[1], res[0]))
+                db.commit()
+                
+                await client.send_cached_media(chat_id=uid, file_id=res[0], caption=f"🎬 **File:** {res[1]}\n🪙 5 Points deducted.", protect_content=True)
+                await cb.answer("✅ Check your chat! File sent.", show_alert=True)
+            else:
+                await cb.answer("❌ File missing from database.", show_alert=True)
 
-🪙 **-5 Points**
-🗑️ **AUTO DELETES IN 5 MINS**
-🔒 **protect_content=True**
-⚠️ **Real file error**""",
-                protect_content=True
-            )
-            asyncio.create_task(auto_delete_file(user_id, movie_msg.id, movie[0]))
-            await callback_query.answer("✅ **Demo Sent!**\n(Real file error)", show_alert=True)
-    else:
-        await callback_query.answer("❌ **Movie not found**", show_alert=True)
+        elif data == "back_start":
+            await start_cmd(client, cb.message)
 
-# ==================== CALLBACK HANDLERS ====================
-@app.on_callback_query(filters.regex(r"^(search_menu|buy_menu|my_points)$"))
-async def menu_callbacks(client, callback_query):
-    data = callback_query.data
-    user_id = callback_query.from_user.id
-    
-    if data == "buy_menu":
-        await buy_cmd(client, callback_query.message)
-    elif data == "search_menu":
-        await callback_query.message.edit_text(
-            """🔍 **SEARCH MOVIES**
+    except Exception as e:
+        print(f"Callback Error: {e}")
+        await cb.answer("⚠️ An error occurred.", show_alert=True)
 
-💡 **Just type movie name:**
-- Avengers
-- Jawan  
-- Pathaan
-- Animal
-
-✅ **Real database search**
-🗑️ **5min auto-delete**
-📥 **5 Points per download**"""
-        )
-    elif data == "my_points":
-        cursor.execute("SELECT points FROM users WHERE user_id=?", (user_id,))
-        points = cursor.fetchone()[0]
-        await callback_query.message.edit_text(
-            f"""🪙 **Your Points: {points}**
-
-📥 **Download = 5 Points**
-💰 **Low balance? /buy**
-
-🔥 **Free 50 Points** = New users"""
-        )
-
-@app.on_callback_query(filters.regex(r"^pay(100|500)"))
-async def payment_info(client, callback_query):
-    points = "100" if "100" in callback_query.data else "500"
-    price = "₹20" if "100" in callback_query.data else "₹90"
-    await callback_query.answer(f"💰 **{points} Points = {price}**\n📱 Pay to: {UPI_LINK}", show_alert=True)
-
-# ==================== STATS FOR ADMIN ====================
-@app.on_message(filters.command("stats") & filters.user(ADMIN_ID))
-async def stats_cmd(client, message):
-    cursor.execute("SELECT COUNT(*) FROM users")
-    total_users = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM users WHERE is_banned=1")
-    banned_count = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM movies")
-    movie_count = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM temp_files")
-    active_downloads = cursor.fetchone()[0]
-    
-    stats_text = f"""📊 **PRO BOT STATS**
-
-👥 **Total Users:** {total_users}
-🚫 **Banned Users:** {banned_count}
-🎬 **Movies in DB:** {movie_count}
-📥 **Active Downloads:** {active_downloads}
-
-💰 **UPI:** {UPI_LINK}
-👑 **Admin:** `{ADMIN_ID}`"""
-    
-    await message.reply_text(stats_text)
-
-# ==================== LAUNCH SEQUENCE ====================
+# --- 10. LAUNCH ---
 if __name__ == "__main__":
-    print("🔥 ================= MOVIE BOT PRO v2.0 =================")
-    print(f"👑 Admin ID: {ADMIN_ID}")
-    print(f"💰 UPI Link: {UPI_LINK}")
-    print(f"📱 Channel: {CHANNEL}")
-    print("✅ All 4 Features Ready!")
-    
-    # Start Flask
-    Thread(target=run_flask, daemon=True).start()
-    print("🌐 Flask Server: ACTIVE")
-    
-    # Start Bot
-    print("🤖 Pyrogram Bot: Starting...")
-    app.run()
+    print("🚀 PRO Bot is starting with strict restrictions...")
+    keep_alive()
+    bot_app.run()
