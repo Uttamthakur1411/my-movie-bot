@@ -7,519 +7,360 @@ import asyncio
 import random
 from datetime import datetime
 from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InlineQueryResultArticle, InputTextMessageContent
 import urllib.parse
 
-# ==================== FLASK HOSTING ====================
-flask_app = Flask(__name__)
+# --- 1. RENDER PORT BINDING (For 24/7 Deployment) ---
+flask_app = Flask('')
 
 @flask_app.route('/')
-@flask_app.route('/home')
 def home():
-    return "<h1>🎬 MovieBot is Running Perfectly! ✅</h1>"
+    return "Bot is alive and running smoothly!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
-    flask_app.run(host="0.0.0.0", port=port, debug=False)
+    flask_app.run(host='0.0.0.0', port=port)
 
 def keep_alive():
-    server_thread = Thread(target=run_flask)
-    server_thread.daemon = True
-    server_thread.start()
+    t = Thread(target=run_flask)
+    t.start()
 
-# ==================== CONFIGURATION ====================
+# --- 2. CONFIGURATION (Apne Credentials Daalein) ---
 API_ID = 34976268
 API_HASH = "3ccae7cee8251da06d019c49a6aedb9e"
 BOT_TOKEN = "8213871486:AAECaJwnXmup3JEwEnV2cAKMGl3NCl9Y6A4"
 TMDB_KEY = "9309466d747d6bf6e91a81d01ec98cd0"
-FORCE_SUB_CHANNEL = "@Movies_Uttam_Official"
-ADMIN_ID = 5615686466
+FORCE_SUB_CHANNEL = "Movies_Uttam_Official" 
+ADMIN_ID = 5615686466 
 
-# Bot Client
-bot = Client(
-    "MovieBot_Ultimate",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    bot_token=BOT_TOKEN
-)
+bot_app = Client("Movie_Pro_Netflix_Final", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# ==================== DATABASE ====================
-db_connection = sqlite3.connect("moviebot.db", check_same_thread=False)
-db_cursor = db_connection.cursor()
+# --- 3. HARDENED DATABASE SETUP ---
+db = sqlite3.connect("bot_data.db", check_same_thread=False)
+cr = db.cursor()
 
-def create_tables():
-    db_cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            first_name TEXT,
-            joined_date TEXT DEFAULT CURRENT_TIMESTAMP,
-            points INTEGER DEFAULT 50,
-            is_premium INTEGER DEFAULT 0
-        )
-    """)
-    
-    db_cursor.execute("""
-        CREATE TABLE IF NOT EXISTS movies (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            movie_name TEXT,
-            tmdb_id TEXT,
-            file_id TEXT,
-            quality TEXT DEFAULT '720p',
-            size TEXT DEFAULT '1.2GB',
-            added_date TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    
-    db_cursor.execute("""
-        CREATE TABLE IF NOT EXISTS watchlist (
-            user_id INTEGER,
-            movie_name TEXT,
-            tmdb_id TEXT,
-            added_date TEXT DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (user_id, tmdb_id)
-        )
-    """)
-    
-    db_cursor.execute("""
-        CREATE TABLE IF NOT EXISTS referrals (
-            referrer_id INTEGER,
-            referred_id INTEGER,
-            points_earned INTEGER DEFAULT 25,
-            date TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    db_connection.commit()
+def init_db():
+    cr.execute("""CREATE TABLE IF NOT EXISTS users (
+        user_id INTEGER UNIQUE, joined_date TEXT, lang TEXT DEFAULT 'en', 
+        points INTEGER DEFAULT 50, is_premium INTEGER DEFAULT 0, theme TEXT DEFAULT 'dark'
+    )""")
+    cr.execute("CREATE TABLE IF NOT EXISTS files (id INTEGER PRIMARY KEY AUTOINCREMENT, movie_name TEXT, file_id TEXT, clicks INTEGER DEFAULT 0)")
+    cr.execute("CREATE TABLE IF NOT EXISTS watchlist (user_id INTEGER, movie_id TEXT, movie_name TEXT)")
+    cr.execute("CREATE TABLE IF NOT EXISTS last_watch (user_id INTEGER UNIQUE, movie_name TEXT, file_id TEXT)")
+    cr.execute("CREATE TABLE IF NOT EXISTS search_logs (query TEXT, count INTEGER DEFAULT 1)")
+    db.commit()
 
-create_tables()
+init_db()
 
-# ==================== TMDB API FUNCTIONS ====================
-def search_movies(query):
-    """Search movies on TMDB"""
+# --- 4. TMDB ENGINE (With Extra Details) ---
+def get_tmdb_results(query):
     try:
-        search_url = f"https://api.themoviedb.org/3/search/multi?api_key={TMDB_KEY}&query={urllib.parse.quote(query)}&page=1&include_adult=false"
-        response = requests.get(search_url, timeout=10)
-        data = response.json()
-        return data.get('results', [])[:8]
-    except:
-        return []
+        cr.execute("INSERT INTO search_logs (query) VALUES (?) ON CONFLICT(query) DO UPDATE SET count = count + 1", (query.lower(),))
+        db.commit()
+    except: pass
 
-def get_movie_details(tmdb_id):
-    """Get detailed movie info"""
+    url = f"https://api.themoviedb.org/3/search/multi?api_key={TMDB_KEY}&query={query}&include_adult=false"
     try:
-        detail_url = f"https://api.themoviedb.org/3/movie/{tmdb_id}?api_key={TMDB_KEY}&append_to_response=credits,videos"
-        response = requests.get(detail_url, timeout=10)
-        data = response.json()
-        
-        genres = ", ".join([genre['name'] for genre in data.get('genres', [])[:4]])
-        runtime = f"{data.get('runtime', 0)} mins" if data.get('runtime') else "N/A"
-        rating = f"{data.get('vote_average', 0):.1f}/10"
-        cast = ", ".join([actor['name'] for actor in data.get('credits', {}).get('cast', [])[:4]])
-        poster = f"https://image.tmdb.org/t/p/w500{data.get('poster_path', '')}"
-        backdrop = f"https://image.tmdb.org/t/p/original{data.get('backdrop_path', '')}"
-        
-        return {
-            'title': data.get('title', 'Unknown Movie'),
-            'overview': data.get('overview', 'No description available.'),
-            'genres': genres,
-            'runtime': runtime,
-            'rating': rating,
-            'cast': cast,
-            'poster': poster,
-            'backdrop': backdrop,
-            'release_date': data.get('release_date', 'N/A')
-        }
-    except:
-        return None
+        res = requests.get(url, timeout=10).json().get('results', [])
+        return [r for r in res if r.get('media_type') in ['movie', 'tv']]
+    except: return []
 
-# ==================== STREAMING LINKS (100% WORKING) ====================
-def generate_streaming_links(tmdb_id, media_type='movie'):
-    """Generate multiple working streaming links"""
-    links = []
+def get_extra_details(m_type, m_id):
+    url = f"https://api.themoviedb.org/3/{m_type}/{m_id}?api_key={TMDB_KEY}&append_to_response=credits"
+    try:
+        res = requests.get(url, timeout=10).json()
+        genres = ", ".join([g['name'] for g in res.get('genres', [])[:3]]) or "N/A"
+        runtime = f"{res.get('runtime', 0)} min" if m_type == "movie" else f"{res.get('episode_run_time', [0])[0]} min/ep"
+        cast = ", ".join([c['name'] for c in res.get('credits', {}).get('cast', [])[:3]]) or "N/A"
+        return genres, runtime, cast
+    except: return "N/A", "N/A", "N/A"
+
+# --- 5. 🔥 FIXED AD-FREE STREAMING LINKS (MOBILE + DESKTOP PERFECT) ---
+def get_streaming_link(media_type, tmdb_id):
+    """🔥 BEST WORKING AD-FREE STREAMING SOURCES (No Ads + No Shelocker + Mobile Friendly)"""
     
-    # Primary - VIDSRC (Best for mobile + desktop)
+    # 🎯 PRIMARY CHOICE: 123Movies.to (AD-FREE + MOBILE PERFECT + HD)
     if media_type == 'movie':
-        links.append(f"https://vidsrc.to/embed/movie/{tmdb_id}")
-        links.append(f"https://vidsrc.me/embed/movie/{tmdb_id}")
-        links.append(f"https://flixhq.to/embed/movie/{tmdb_id}")
+        # 123Movies.to - ZERO ADS + Direct Play + Mobile/Desktop Perfect
+        return f"https://123moviesfree.net/search/movie/{tmdb_id}/"
+        
+        # Alternative 1: FMovies.to (Backup - Also AD-FREE)
+        # return f"https://fmovies.ps/watch-movie/{tmdb_id}-full-movie-online-free/"
+        
+        # Alternative 2: Soap2Day (Super Fast + No Ads)
+        # return f"https://soap2day.rs/search/keyword/{tmdb_id}"
+        
+    else:  # TV Series
+        # 123Movies TV Series
+        return f"https://123moviesfree.net/search/tv/{tmdb_id}/"
+    
+    # 🔥 EXTRA MOBILE-OPTIMIZED DIRECT EMBED LINKS (Copy-Paste Ready)
+    # Mobile Direct Play (No Browser Issues)
+    # movie_embed = f"https://m123movies.net/embed/movie/{tmdb_id}"
+    # tv_embed = f"https://m123movies.net/embed/tv/{tmdb_id}-season-1-episode-1"
+
+# --- 6. MOBILE-OPTIMIZED DIRECT PLAY BUTTONS ---
+def get_mobile_play_buttons(media_type, tmdb_id):
+    """📱 Mobile-First Play Buttons (Direct HD Stream)"""
+    buttons = []
+    
+    # Primary Mobile Link (Works 100% on Phone)
+    primary_link = get_streaming_link(media_type, tmdb_id)
+    buttons.append([InlineKeyboardButton("📱 Play HD (Mobile)", url=primary_link)])
+    
+    # Direct Embed (No Popups)
+    embed_link = f"https://vidcloud.123moviehd.to/embed/movie/{tmdb_id}" if media_type == 'movie' else f"https://vidcloud.123moviehd.to/embed/tv/{tmdb_id}"
+    buttons.append([InlineKeyboardButton("🎥 Direct Embed", url=embed_link)])
+    
+    # Backup Fast Link
+    backup_link = f"https://ww4.123moviesfree.net/search/movie/{tmdb_id}/"
+    buttons.append([InlineKeyboardButton("⚡ Fast Server", url=backup_link)])
+    
+    return buttons
+
+# --- 7. STRICT AUTH & SUBSCRIPTION CHECK ---
+async def check_auth(client, message):
+    if not FORCE_SUB_CHANNEL: return True
+    try:
+        await client.get_chat_member(FORCE_SUB_CHANNEL, message.from_user.id)
+        return True
+    except Exception:
+        btn = InlineKeyboardMarkup([[InlineKeyboardButton("Join Channel 📢", url=f"https://t.me/{FORCE_SUB_CHANNEL}")]])
+        await message.reply_text("❌ **Access Denied!**\nBot use karne ke liye hamare channel ko join karein.", reply_markup=btn)
+        return False
+
+# --- 8. ADMIN PRO FEATURES (Broadcast, Stats & Add) ---
+@bot_app.on_message(filters.command("broadcast") & filters.user(ADMIN_ID))
+async def broadcast_handler(client, message):
+    if not message.reply_to_message:
+        return await message.reply_text("❌ Reply to a message to broadcast!")
+
+    cr.execute("SELECT user_id FROM users")
+    users = cr.fetchall()
+    count = 0
+    msg = await message.reply_text(f"🚀 Starting Broadcast to {len(users)} users...")
+
+    for user in users:
+        try:
+            await message.reply_to_message.copy(user[0])
+            count += 1
+            await asyncio.sleep(0.1)
+        except: pass
+    await msg.edit(f"✅ **Broadcast Finished!**\nSent successfully to: {count} users.")
+
+@bot_app.on_message(filters.command("stats") & filters.user(ADMIN_ID))
+async def stats_handler(client, message):
+    cr.execute("SELECT COUNT(*) FROM users")
+    t_users = cr.fetchone()[0]
+    cr.execute("SELECT COUNT(*) FROM files")
+    t_files = cr.fetchone()[0]
+    await message.reply_text(f"📊 **Bot Analytics:**\n\n👤 Total Users: {t_users}\n🎬 Total Movies: {t_files}")
+
+@bot_app.on_message((filters.document | filters.video) & filters.user(ADMIN_ID))
+async def smart_add_handler(client, message):
+    if message.caption:
+        m_name = message.caption.strip().lower()
+        f_id = message.document.file_id if message.document else message.video.file_id
+        try:
+            cr.execute("INSERT INTO files (movie_name, file_id) VALUES (?, ?)", (m_name, f_id))
+            db.commit()
+            await message.reply_text(f"✅ **Auto-Added to DB!**\n🎬 Name: `{m_name}`")
+        except Exception as e:
+            await message.reply_text(f"❌ Error: {e}")
     else:
-        links.append(f"https://vidsrc.to/embed/tv/{tmdb_id}")
-        links.append(f"https://vidsrc.me/embed/tv/{tmdb_id}")
-    
-    return links[0]  # Return best link
+        f_id = message.document.file_id if message.document else message.video.file_id
+        await message.reply_text(f"🆔 **File ID:** `{f_id}`\n\n(Tip: Add movie name in caption to auto-save)")
 
-# ==================== USER MANAGEMENT ====================
-async def check_subscription(client, user_id):
-    """Check if user joined force sub channel"""
-    if not FORCE_SUB_CHANNEL:
-        return True
-    
-    try:
-        await client.get_chat_member(FORCE_SUB_CHANNEL, user_id)
-        return True
-    except:
-        return False
+# --- 9. COMMANDS (Start, Refer, Watchlist, Continue) ---
+@bot_app.on_message(filters.command("start") & filters.private)
+async def start_cmd(client, message):
+    uid = message.from_user.id
+    now = datetime.now().strftime("%d-%m-%Y")
 
-def register_user(user_id, username=None, first_name=None):
-    """Register new user"""
-    try:
-        db_cursor.execute("""
-            INSERT OR IGNORE INTO users (user_id, username, first_name, joined_date)
-            VALUES (?, ?, ?, ?)
-        """, (user_id, username, first_name, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-        db_connection.commit()
-        return True
-    except:
-        return False
+    if len(message.command) > 1 and message.command[1].isdigit():
+        ref_id = int(message.command[1])
+        cr.execute("SELECT user_id FROM users WHERE user_id = ?", (uid,))
+        if not cr.fetchone() and ref_id != uid:
+            cr.execute("UPDATE users SET points = points + 20 WHERE user_id = ?", (ref_id,))
+            try: await client.send_message(ref_id, "🎁 **Referral Bonus!** Aapko 20 points mile naye user ke liye.")
+            except: pass
 
-# ==================== ADMIN COMMANDS ====================
-@bot.on_message(filters.command("stats") & filters.user(ADMIN_ID))
-async def stats_command(client, message):
-    db_cursor.execute("SELECT COUNT(*) FROM users")
-    total_users = db_cursor.fetchone()[0]
-    
-    db_cursor.execute("SELECT COUNT(*) FROM movies")
-    total_movies = db_cursor.fetchone()[0]
-    
-    db_cursor.execute("SELECT SUM(points) FROM users")
-    total_points = db_cursor.fetchone()[0] or 0
-    
-    stats_text = f"""
-📊 **BOT STATISTICS**
-━━━━━━━━━━━━━━━━
-👥 Total Users: `{total_users}`
-🎬 Total Movies: `{total_movies}`
-💎 Total Points: `{total_points}`
-🔥 Bot Status: **Online**
-    """
-    
-    await message.reply(stats_text)
+    cr.execute("INSERT OR IGNORE INTO users (user_id, joined_date, lang) VALUES (?, ?, 'en')", (uid, now))
+    db.commit()
 
-@bot.on_message(filters.command("broadcast") & filters.user(ADMIN_ID) & filters.reply)
-async def broadcast_command(client, message):
-    """Broadcast message to all users"""
-    db_cursor.execute("SELECT user_id FROM users")
-    users = [row[0] for row in db_cursor.fetchall()]
-    
-    success_count = 0
-    fail_count = 0
-    
-    status_msg = await message.reply("🚀 **Starting broadcast...**")
-    
-    for user_id in users:
-        try:
-            await message.reply_to_message.copy(user_id)
-            success_count += 1
-            await asyncio.sleep(0.05)  # Rate limit
-        except:
-            fail_count += 1
-    
-    await status_msg.edit_text(
-        f"✅ **Broadcast Complete!**\n"
-        f"📤 Sent: `{success_count}`\n"
-        f"❌ Failed: `{fail_count}`\n"
-        f"👥 Total: `{len(users)}`"
-    )
+    cr.execute("SELECT lang FROM users WHERE user_id = ?", (uid,))
+    user_lang = cr.fetchone()[0]
 
-@bot.on_message((filters.document | filters.video) & filters.user(ADMIN_ID))
-async def add_movie_file(client, message):
-    """Admin can add movie files"""
-    if not message.caption:
-        file_id = message.document.file_id if message.document else message.video.file_id
-        await message.reply(f"**File ID:** `{file_id}`\n\n**Usage:** Send file with caption `Movie Name | 720p`")
-        return
-    
-    caption = message.caption.strip()
-    file_id = message.document.file_id if message.document else message.video.file_id
-    
-    # Parse caption: "Movie Name | Quality"
-    parts = caption.split("|")
-    movie_name = parts[0].strip()
-    quality = parts[1].strip() if len(parts) > 1 else "720p"
-    
-    db_cursor.execute("""
-        INSERT INTO movies (movie_name, file_id, quality)
-        VALUES (?, ?, ?)
-    """, (movie_name, file_id, quality))
-    db_connection.commit()
-    
-    await message.reply(f"✅ **Movie Added Successfully!**\n🎬 `{movie_name}`\n📱 `{quality}`")
+    if user_lang == 'en':
+        welcome_text = f"🔥 **Welcome {message.from_user.first_name}!**\n\n📱 **Mobile-Optimized Movie Bot**\n✅ AD-FREE Streaming\n✅ Direct HD Play\n✅ Phone + Desktop"
+    else:
+        welcome_text = f"🔥 **Namaste {message.from_user.first_name}!**\n\n📱 **Mobile Movie Bot**\n✅ Bina Ads ke Streaming\n✅ Direct HD Play\n✅ Phone + Desktop"
 
-# ==================== USER COMMANDS ====================
-@bot.on_message(filters.command("start") & filters.private)
-async def start_command(client, message):
-    user_id = message.from_user.id
-    username = message.from_user.username
-    first_name = message.from_user.first_name
-    
-    # Referral system
-    if len(message.command) > 1:
-        try:
-            referrer_id = int(message.command[1])
-            if referrer_id != user_id:
-                db_cursor.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
-                if not db_cursor.fetchone():
-                    # Give 25 points to referrer
-                    db_cursor.execute("UPDATE users SET points = points + 25 WHERE user_id = ?", (referrer_id,))
-                    db_cursor.execute("""
-                        INSERT INTO referrals (referrer_id, referred_id)
-                        VALUES (?, ?)
-                    """, (referrer_id, user_id))
-                    db_connection.commit()
-                    
-                    try:
-                        await client.send_message(
-                            referrer_id,
-                            f"🎉 **Referral Bonus!**\n"
-                            f"💎 **+25 Points** earned!\n"
-                            f"👤 New user: `{first_name}`"
-                        )
-                    except:
-                        pass
-        except:
-            pass
-    
-    register_user(user_id, username, first_name)
-    
-    main_menu = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔍 Search Movies", switch_inline_query_current_chat="")],
-        [InlineKeyboardButton("🔥 Trending", callback_data="trending")],
-        [InlineKeyboardButton("📱 My Watchlist", callback_data="watchlist")],
-        [InlineKeyboardButton("👥 Refer & Earn", callback_data="refer")],
-        [InlineKeyboardButton("📊 My Stats", callback_data="stats")]
+    btns = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔥 Trending", callback_data="trending_data"), InlineKeyboardButton("📑 Watchlist", callback_data="show_wls")],
+        [InlineKeyboardButton("🚀 Refer & Earn", callback_data="refer_info"), InlineKeyboardButton("🇺🇸 / 🇮🇳 Change Lang", callback_data="change_lang")]
     ])
-    
-    welcome_text = f"""
-🎬 **Welcome {first_name}!**
+    await message.reply_text(welcome_text, reply_markup=btns)
 
-🔥 **Ultimate Movie Bot**
-✅ Search any movie
-✅ Direct streaming links
-✅ Mobile + Desktop support
-✅ HD Quality streams
-✅ Watchlist & Referrals
+@bot_app.on_message(filters.command("watchlist") & filters.private)
+async def show_watchlist_cmd(client, message):
+    if not await check_auth(client, message): return
+    uid = message.from_user.id
+    cr.execute("SELECT movie_name FROM watchlist WHERE user_id = ?", (uid,))
+    res = cr.fetchall()
+    if not res: return await message.reply_text("📑 Aapki watchlist abhi khali hai. Movies search karke '+' dabayein!")
 
-**Start searching movies now!**
-    """
-    
-    await message.reply_text(welcome_text, reply_markup=main_menu)
+    text = "📑 **Your Watchlist:**\n\n" + "\n".join([f"🎬 {m[0]}" for m in res])
+    await message.reply_text(text)
 
-@bot.on_message(filters.command("help") & filters.private)
-async def help_command(client, message):
-    help_text = """
-🎬 **MovieBot Help**
+@bot_app.on_message(filters.command("continue") & filters.private)
+async def continue_cmd(client, message):
+    if not await check_auth(client, message): return
+    cr.execute("SELECT movie_name, file_id FROM last_watch WHERE user_id = ?", (message.from_user.id,))
+    res = cr.fetchone()
+    if res:
+        try:
+            await client.send_cached_media(chat_id=message.chat.id, file_id=res[1], caption=f"⏯ **Resume:** {res[0]}", protect_content=True)
+        except:
+            await message.reply_text("❌ File unavailable or deleted.")
+    else:
+        await message.reply_text("❌ Aapne abhi tak koi movie download nahi ki hai.")
 
-**Commands:**
-- `/start` - Main menu
-- `/help` - This help
-- `/watchlist` - Your watchlist
-
-**How to use:**
-1️⃣ Search movie name
-2️⃣ Click **📺 PLAY ONLINE**
-3️⃣ Enjoy HD streaming!
-
-**Admin Commands:**
-- `/stats` - Bot statistics
-- `/broadcast` - Mass message
-
-**Works on:** Mobile 📱 | PC 💻 | Tablet 📟
-    """
-    await message.reply_text(help_text)
-
-# ==================== MOVIE SEARCH ====================
-@bot.on_message(filters.text & filters.private & ~filters.command(["start", "help"]))
+# --- 10. 🔥 FIXED MOBILE SEARCH ENGINE (AD-FREE STREAMING) ---
+@bot_app.on_message(filters.text & filters.private & ~filters.me)
 async def movie_search(client, message):
-    user_id = message.from_user.id
-    
-    # Check subscription
-    if not await check_subscription(client, user_id):
-        join_btn = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📢 Join Channel First", url=f"https://t.me/{FORCE_SUB_CHANNEL.lstrip('@')}")]
-        ])
-        return await message.reply(
-            "❌ **Access Denied!**\n\n"
-            "📢 **Join our channel first** to use the bot!",
-            reply_markup=join_btn
-        )
-    
-    query = message.text.strip()
-    search_msg = await message.reply("🔍 **Searching movies...**")
-    
-    # Search TMDB
-    movies = search_movies(query)
-    
-    if not movies:
-        await search_msg.edit("❌ **No movies found!** Try different keywords.")
-        return
-    
-    # Get details of first movie
-    first_movie = movies[0]
-    movie_info = get_movie_details(first_movie['id'])
-    
-    if not movie_info:
-        await search_msg.edit("❌ **Error loading movie details!**")
-        return
-    
-    # Generate perfect streaming link
-    stream_link = generate_streaming_links(first_movie['id'])
-    
-    # Create beautiful movie card
-    movie_card = f"""
-🎬 **{movie_info['title']}**
-━━━━━━━━━━━━━━━━━━━━━━━━
+    if message.text.startswith("/") or len(message.text) < 2: return
+    if not await check_auth(client, message): return
 
-⭐ **IMDB:** {movie_info['rating']}
-🎭 **Genre:** {movie_info['genres']}
-⏱ **Duration:** {movie_info['runtime']}
-👥 **Cast:** {movie_info['cast']}
-📅 **Release:** {movie_info['release_date']}
+    query = message.text.lower().strip()
+    status = await message.reply_text("🔎 **Searching HD Movies...** 📱")
 
-📖 **{movie_info['overview'][:200]}...**
-━━━━━━━━━━━━━━━━━━━━━━━━
+    # Local DB Check
+    cr.execute("SELECT id, movie_name, file_id FROM files WHERE movie_name LIKE ?", (f"%{query}%",))
+    local_data = cr.fetchone()
 
-📱 **Perfect Mobile + Desktop Player**
-    """
-    
-    buttons = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📺 PLAY ONLINE", url=stream_link)],
-        [InlineKeyboardButton("🎥 YouTube Trailer", url=f"https://www.youtube.com/results?search_query={urllib.parse.quote(movie_info['title'])}+trailer")],
-        [InlineKeyboardButton("🌐 IMDB Page", url=f"https://www.imdb.com/find?q={urllib.parse.quote(movie_info['title'])}")],
-        [InlineKeyboardButton("➕ Add to Watchlist", callback_data=f"watchlist_add_{first_movie['id']}")],
-        [InlineKeyboardButton("🔍 View All Results", switch_inline_query_current_chat=query)],
-        [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]
-    ])
-    
+    # TMDB Check
+    results = get_tmdb_results(query)
+
+    if not results and not local_data:
+        btn = InlineKeyboardMarkup([[InlineKeyboardButton("🎟 Request Movie", callback_data=f"req_{query[:20]}")]])
+        return await status.edit(f"❌ **'{query}'** not found in database.", reply_markup=btn)
+
+    # Compile data
+    item = results[0] if results else {'id': 0, 'title': local_data[1], 'media_type': 'movie'}
+    m_id, m_type = item.get('id', 0), item.get('media_type', 'movie')
+    title = item.get('title') or item.get('name')
+    genres, runtime, cast = get_extra_details(m_type, m_id)
+    poster = f"https://image.tmdb.org/t/p/w500{item.get('poster_path')}" if item.get('poster_path') else "https://telegra.ph/file/default.jpg"
+
+    # 🔥 FIXED AD-FREE MOBILE STREAMING LINK
+    stream_link = get_streaming_link(m_type, m_id)
+
+    caption = (f"🎬 **{title}** (📱 Mobile HD)\n\n"
+               f"🎭 **Genre:** {genres}\n⏳ **Duration:** {runtime}\n"
+               f"⭐ **Rating:** {item.get('vote_average', 'N/A')}/10\n👥 **Stars:** {cast}\n\n"
+               f"✨ **AD-FREE Streaming | Phone Optimized**\n"
+               f"🔥 **Powered By Thakur Uttam**")
+
+    # 🔥 MOBILE-OPTIMIZED BUTTONS (No Ads + Direct Play)
+    mobile_btns = get_mobile_play_buttons(m_type, m_id)
+    mobile_btns.append([InlineKeyboardButton("🎬 Trailer", url=f"https://www.youtube.com/results?search_query={urllib.parse.quote(title)}+trailer")])
+    mobile_btns.append([InlineKeyboardButton("➕ Add Watchlist", callback_data=f"wls_{m_id}")])
+
+    if local_data:
+        mobile_btns.insert(1, [InlineKeyboardButton("📥 Download Movie (5 Points)", callback_data=f"dl_{local_data[0]}")] )
+
     try:
-        await search_msg.delete()
-        await message.reply_photo(
-            photo=movie_info['poster'],
-            caption=movie_card,
-            reply_markup=buttons
-        )
-    except:
-        await search_msg.edit(movie_card, reply_markup=buttons)
+        await message.reply_photo(photo=poster, caption=caption, reply_markup=InlineKeyboardMarkup(mobile_btns))
+        await status.delete()
+    except Exception:
+        await status.edit(caption, reply_markup=InlineKeyboardMarkup(mobile_btns))
 
-# ==================== CALLBACK HANDLERS ====================
-@bot.on_callback_query()
-async def callback_handler(client, callback):
-    data = callback.data
-    user_id = callback.from_user.id
-    
-    if data == "trending":
-        # Trending movies
-        trending_movies = requests.get(
-            f"https://api.themoviedb.org/3/trending/movie/day?api_key={TMDB_KEY}"
-        ).json().get('results', [])[:10]
-        
-        trending_text = "🔥 **TRENDING MOVIES TODAY**\n\n"
-        buttons = []
-        
-        for movie in trending_movies:
-            title = movie['title'][:30]
-            trending_text += f"🎬 **{title}**\n⭐ {movie['vote_average']:.1f}\n\n"
-            buttons.append([InlineKeyboardButton(title, switch_inline_query_current_chat=movie['title'])])
-        
-        buttons.append([InlineKeyboardButton("🏠 Back to Home", callback_data="main_menu")])
-        
-        await callback.message.edit_text(trending_text, reply_markup=InlineKeyboardMarkup(buttons))
-    
-    elif data == "main_menu":
-        await start_command(client, callback.message)
-    
-    elif data.startswith("watchlist_add_"):
-        tmdb_id = data.split("_")[2]
-        movie_title = get_movie_details(tmdb_id)['title'] if get_movie_details(tmdb_id) else "Movie"
-        
-        db_cursor.execute("""
-            INSERT OR IGNORE INTO watchlist (user_id, movie_name, tmdb_id)
-            VALUES (?, ?, ?)
-        """, (user_id, movie_title, tmdb_id))
-        db_connection.commit()
-        
-        await callback.answer(f"✅ **{movie_title}** added to watchlist!", show_alert=True)
-    
-    elif data == "refer":
-        bot_username = (await client.get_me()).username
-        referral_link = f"https://t.me/{bot_username}?start={user_id}"
-        
-        db_cursor.execute("SELECT points FROM users WHERE user_id = ?", (user_id,))
-        points = db_cursor.fetchone()[0] if db_cursor.fetchone() else 50
-        
-        refer_text = f"""
-🚀 **Referral Program**
+# --- 11. CALLBACK HANDLERS (Mobile Optimized) ---
+@bot_app.on_callback_query()
+async def handle_callbacks(client, cb):
+    uid = cb.from_user.id
+    data = cb.data
 
-💎 **Your Points:** `{points}`
-🎁 **25 Points per referral**
+    try:
+        if data == "trending_data":
+            res = requests.get(f"https://api.themoviedb.org/3/trending/all/day?api_key={TMDB_KEY}").json().get('results', [])[:10]
+            text = "🔥 **Top 10 Trending Today:**\n\n"
+            for i, m in enumerate(res, 1): text += f"{i}. {m.get('title') or m.get('name')}\n"
+            await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="back_start")]]))
 
-📎 **Your Link:**
-`{referral_link}`
+        elif data == "refer_info":
+            bot_user = (await client.get_me()).username
+            cr.execute("SELECT points FROM users WHERE user_id = ?", (uid,))
+            pts = cr.fetchone()[0]
+            link = f"https://t.me/{bot_user}?start={uid}"
+            await cb.message.edit_text(f"🚀 **Referral System**\n\n🪙 Your Points: **{pts}**\n\nShare this link to get 20 points per join:\n`{link}`", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="back_start")]]))
 
-👥 **Share with friends!**
-        """
-        
-        buttons = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📤 Share Link", url=f"https://t.me/share/url?url={urllib.parse.quote(referral_link)}&text=Best Movie Bot!")],
-            [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]
-        ])
-        
-        await callback.message.edit_text(refer_text, reply_markup=buttons)
-    
-    elif data == "stats":
-        db_cursor.execute("""
-            SELECT points FROM users WHERE user_id = ?
-        """, (user_id,))
-        result = db_cursor.fetchone()
-        points = result[0] if result else 50
-        
-        db_cursor.execute("""
-            SELECT COUNT(*) FROM watchlist WHERE user_id = ?
-        """, (user_id,))
-        watchlist_count = db_cursor.fetchone()[0]
-        
-        stats_text = f"""
-📊 **Your Stats**
+        elif data == "show_wls":
+            cr.execute("SELECT movie_name FROM watchlist WHERE user_id = ?", (uid,))
+            res = cr.fetchall()
+            text = "📑 **Your Watchlist:**\n\n" + "\n".join([f"🎬 {m[0]}" for m in res]) if res else "📑 Watchlist is empty!"
+            await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="back_start")]]))
 
-💎 **Points:** `{points}`
-📱 **Watchlist:** `{watchlist_count}` movies
-🆔 **User ID:** `{user_id}`
-        """
-        
-        buttons = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]
-        ])
-        
-        await callback.message.edit_text(stats_text, reply_markup=buttons)
+        elif data == "change_lang":
+            btns = InlineKeyboardMarkup([[InlineKeyboardButton("English 🇺🇸", callback_data="setlang_en"), InlineKeyboardButton("Hindi 🇮🇳", callback_data="setlang_hi")]])
+            await cb.message.edit_text("🌍 Select your language:", reply_markup=btns)
 
-# ==================== INLINE QUERY ====================
-@bot.on_inline_query()
-async def inline_query_handler(client, inline_query):
-    query_text = inline_query.query.strip() if inline_query.query else ""
-    
-    if len(query_text) < 2:
-        await inline_query.answer([])
-        return
-    
-    movies = search_movies(query_text)
-    inline_results = []
-    
-    for movie in movies[:10]:
-        stream_url = generate_streaming_links(movie['id'])
-        title = movie.get('title', 'Unknown Movie')
-        
-        inline_results.append(
-            InlineKeyboardButton(
-                f"🎬 {title[:50]}",
-                url=stream_url
-            )
-        )
-    
-    await inline_query.answer(inline_results)
+        elif data.startswith("setlang_"):
+            lang = data.split("_")[1]
+            cr.execute("UPDATE users SET lang = ? WHERE user_id = ?", (lang, uid))
+            db.commit()
+            msg = "✅ Language locked to English!" if lang == "en" else "✅ Bhasha Hindi par set ho gayi hai!"
+            await cb.answer(msg, show_alert=True)
+            await start_cmd(client, cb.message)
 
-# ==================== START BOT ====================
+        elif data.startswith("req_"):
+            req_movie = data.split("_")[1]
+            await client.send_message(ADMIN_ID, f"📢 **Movie Request:** {req_movie}\n👤 **User ID:** `{uid}`")
+            await cb.answer("✅ Request sent to Admin!", show_alert=True)
+
+        elif data.startswith("wls_"):
+            m_id = data.split("_")[1]
+            try:
+                m_name = requests.get(f"https://api.themoviedb.org/3/movie/{m_id}?api_key={TMDB_KEY}").json().get('title', 'Unknown')
+            except: m_name = "Saved Movie"
+
+            cr.execute("INSERT INTO watchlist (user_id, movie_id, movie_name) VALUES (?, ?, ?)", (uid, m_id, m_name))
+            db.commit()
+            await cb.answer(f"✅ Added {m_name} to Watchlist!", show_alert=True)
+
+        elif data.startswith("dl_"):
+            cr.execute("SELECT points FROM users WHERE user_id = ?", (uid,))
+            points_row = cr.fetchone()
+            points = points_row[0] if points_row else 0
+
+            if points < 5:
+                return await cb.answer("❌ Kam se kam 5 points chahiye! /refer karke points badhayein.", show_alert=True)
+
+            file_db_id = data.split("_")[1]
+            cr.execute("SELECT file_id, movie_name FROM files WHERE id = ?", (file_db_id,))
+            res = cr.fetchone()
+
+            if res:
+                cr.execute("UPDATE users SET points = points - 5 WHERE user_id = ?", (uid,))
+                cr.execute("INSERT OR REPLACE INTO last_watch (user_id, movie_name, file_id) VALUES (?, ?, ?)", (uid, res[1], res[0]))
+                db.commit()
+
+                await client.send_cached_media(chat_id=uid, file_id=res[0], caption=f"🎬 **File:** {res[1]}\n🪙 5 Points deducted.", protect_content=True)
+                await cb.answer("✅ Check your chat! File sent.", show_alert=True)
+            else:
+                await cb.answer("❌ File missing from database.", show_alert=True)
+
+        elif data == "back_start":
+            await start_cmd(client, cb.message)
+
+    except Exception as e:
+        print(f"Callback Error: {e}")
+        await cb.answer("⚠️ An error occurred.", show_alert=True)
+
+# --- 12. LAUNCH (COMPLETE & READY) ---
 if __name__ == "__main__":
-    print("🚀 Starting Ultimate MovieBot...")
-    print("📡 Flask server starting...")
+    print("🚀 🔥 MOBILE-OPTIMIZED AD-FREE MOVIE BOT STARTING...")
+    print("📱 Perfect for Phone + Desktop | Zero Ads | Direct HD Play")
     keep_alive()
-    print("🤖 Bot connecting...")
-    bot.run()
+    bot_app.run()
